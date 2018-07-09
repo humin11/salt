@@ -11,8 +11,8 @@ until 2015.8.0. The `salt.utils.compat.pack_dunder` helper function
 provides backwards compatibility.
 
 This module provides common functionality for the boto execution modules.
-The expected usage is to call `apply_funcs` from the `__virtual__` function
-of the module. This will bring properly initilized partials of  `_get_conn`
+The expected usage is to call `assign_funcs` from the `__virtual__` function
+of the module. This will bring properly initialized partials of  `_get_conn`
 and `_cache_id` into the module's namespace.
 
 Example Usage:
@@ -25,7 +25,7 @@ Example Usage:
             # only required in 2015.2
             salt.utils.compat.pack_dunder(__name__)
 
-            __utils__['boto.apply_funcs'](__name__, 'vpc')
+            __utils__['boto.assign_funcs'](__name__, 'vpc')
 
         def test():
             conn = _get_conn()
@@ -35,18 +35,19 @@ Example Usage:
 '''
 
 # Import Python libs
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 import hashlib
 import logging
 import sys
-from distutils.version import LooseVersion as _LooseVersion  # pylint: disable=import-error,no-name-in-module
 from functools import partial
 from salt.loader import minion_mods
 
 # Import salt libs
-from salt.ext.six import string_types  # pylint: disable=import-error
+from salt.ext import six
 from salt.ext.six.moves import range  # pylint: disable=import-error,redefined-builtin
 from salt.exceptions import SaltInvocationError
+import salt.utils.stringutils
+import salt.utils.versions
 
 # Import third party libs
 # pylint: disable=import-error
@@ -72,22 +73,17 @@ def __virtual__():
     Only load if boto libraries exist and if boto libraries are greater than
     a given version.
     '''
-    # TODO: Determine minimal version we want to support. VPC requires > 2.8.0.
-    required_boto_version = '2.0.0'
-    if not HAS_BOTO:
-        return False
-    elif _LooseVersion(boto.__version__) < _LooseVersion(required_boto_version):
-        return False
-    else:
+    has_boto_requirements = salt.utils.versions.check_boto_reqs(check_boto3=False)
+    if has_boto_requirements is True:
         global __salt__
         if not __salt__:
             __salt__ = minion_mods(__opts__)
-        return True
+    return has_boto_requirements
 
 
 def _get_profile(service, region, key, keyid, profile):
     if profile:
-        if isinstance(profile, string_types):
+        if isinstance(profile, six.string_types):
             _profile = __salt__['config.option'](profile)
         elif isinstance(profile, dict):
             _profile = profile
@@ -106,7 +102,10 @@ def _get_profile(service, region, key, keyid, profile):
 
     label = 'boto_{0}:'.format(service)
     if keyid:
-        cxkey = label + hashlib.md5(region + keyid + key).hexdigest()
+        hash_string = region + keyid + key
+        if six.PY3:
+            hash_string = salt.utils.stringutils.to_bytes(hash_string)
+        cxkey = label + hashlib.md5(hash_string).hexdigest()
     else:
         cxkey = label + region
 
@@ -153,9 +152,9 @@ def cache_id(service, name, sub_resource=None, resource_id=None,
 
 def cache_id_func(service):
     '''
-    Returns a partial `cache_id` function for the provided service.
+    Returns a partial ``cache_id`` function for the provided service.
 
-    ... code-block:: python
+    .. code-block:: python
 
         cache_id = __utils__['boto.cache_id_func']('ec2')
         cache_id('myinstance', 'i-a1b2c3')
@@ -174,9 +173,12 @@ def get_connection(service, module=None, region=None, key=None, keyid=None,
         conn = __utils__['boto.get_connection']('ec2', profile='custom_profile')
     '''
 
-    module = module or service
+    # future lint: disable=blacklisted-function
+    module = str(module or service)
+    module, submodule = (str('boto.') + module).rsplit(str('.'), 1)
+    # future lint: enable=blacklisted-function
 
-    svc_mod = __import__('boto.' + module, fromlist=[module])
+    svc_mod = getattr(__import__(module, fromlist=[submodule]), submodule)
 
     cxkey, region, key, keyid = _get_profile(service, region, key,
                                              keyid, profile)
@@ -201,9 +203,9 @@ def get_connection(service, module=None, region=None, key=None, keyid=None,
 
 def get_connection_func(service, module=None):
     '''
-    Returns a partial `get_connection` function for the provided service.
+    Returns a partial ``get_connection`` function for the provided service.
 
-    ... code-block:: python
+    .. code-block:: python
 
         get_conn = __utils__['boto.get_connection_func']('ec2')
         conn = get_conn()
@@ -257,7 +259,7 @@ def assign_funcs(modname, service, module=None, pack=None):
 
     .. code-block:: python
 
-        _utils__['boto.assign_partials'](__name__, 'ec2')
+        __utils__['boto.assign_partials'](__name__, 'ec2')
     '''
     if pack:
         global __salt__  # pylint: disable=W0601
@@ -266,15 +268,16 @@ def assign_funcs(modname, service, module=None, pack=None):
     setattr(mod, '_get_conn', get_connection_func(service, module=module))
     setattr(mod, '_cache_id', cache_id_func(service))
 
-    # TODO: Remove this and import salt.utils.exactly_one into boto_* modules instead
+    # TODO: Remove this and import salt.utils.data.exactly_one into boto_* modules instead
     # Leaving this way for now so boto modules can be back ported
     setattr(mod, '_exactly_one', exactly_one)
 
 
 def paged_call(function, *args, **kwargs):
-    """Retrieve full set of values from a boto API call that may truncate
+    '''
+    Retrieve full set of values from a boto API call that may truncate
     its results, yielding each page as it is obtained.
-    """
+    '''
     marker_flag = kwargs.pop('marker_flag', 'marker')
     marker_arg = kwargs.pop('marker_flag', 'marker')
     while True:

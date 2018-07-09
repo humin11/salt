@@ -25,7 +25,7 @@ no disk space:
         - unless: echo 'foo' > /tmp/.test && rm -f /tmp/.test
 
 Only run if the file specified by ``creates`` does not exist, in this case
-touch /tmp/foo if it does not exist.
+touch /tmp/foo if it does not exist:
 
 .. code-block:: yaml
 
@@ -33,9 +33,29 @@ touch /tmp/foo if it does not exist.
       cmd.run:
         - creates: /tmp/foo
 
+``creates`` also accepts a list of files:
+
+.. code-block:: yaml
+
+    echo 'foo' | tee /tmp/bar > /tmp/baz:
+      cmd.run:
+        - creates:
+          - /tmp/bar
+          - /tmp/baz
+
 .. note::
 
     The ``creates`` option was added to version 2014.7.0
+
+Sometimes when running a command that starts up a daemon, the init script
+doesn't return properly which causes Salt to wait indefinitely for a response.
+In situations like this try the following:
+
+.. code-block:: yaml
+
+    run_installer:
+      cmd.run:
+        - name: /tmp/installer.bin  > /dev/null 2>&1
 
 Salt determines whether the ``cmd`` state is successfully enforced based on the exit
 code returned by the command. If the command returns a zero exit code, then salt
@@ -151,15 +171,15 @@ Should I use :mod:`cmd.run <salt.states.cmd.run>` or :mod:`cmd.wait <salt.states
 
 .. note::
 
-    Use ``cmd.run`` together with :mod:`onchanges </ref/states/requisites#onchanges>`
-    instead of ``cmd.wait``.
+    Use :mod:`cmd.run <salt.states.cmd.run>` together with :ref:`onchanges <requisites-onchanges>`
+    instead of :mod:`cmd.wait <salt.states.cmd.wait>`.
 
 These two states are often confused. The important thing to remember about them
 is that :mod:`cmd.run <salt.states.cmd.run>` states are run each time the SLS
 file that contains them is applied. If it is more desirable to have a command
 that only runs after some other state changes, then :mod:`cmd.wait
 <salt.states.cmd.wait>` does just that. :mod:`cmd.wait <salt.states.cmd.wait>`
-is designed to :doc:`watch </ref/states/requisites>` other states, and is
+is designed to :ref:`watch <requisites-watch>` other states, and is
 executed when the state it is watching changes. Example:
 
 .. code-block:: yaml
@@ -179,8 +199,7 @@ executed when the state it is watching changes. Example:
 ``cmd.wait`` itself does not do anything; all functionality is inside its ``mod_watch``
 function, which is called by ``watch`` on changes.
 
-``cmd.wait`` will be deprecated in future due to the confusion it causes. The
-preferred format is using the :doc:`onchanges Requisite </ref/states/requisites>`, which
+The preferred format is using the :ref:`onchanges Requisite <requisites-onchanges>`, which
 works on ``cmd.run`` as well as on any other state. The example would then look as follows:
 
 .. code-block:: yaml
@@ -212,17 +231,18 @@ To use it, one may pass it like this. Example:
 '''
 
 # Import python libs
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 
 import os
 import copy
-import json
 import logging
 
 # Import salt libs
-import salt.utils
+import salt.utils.args
+import salt.utils.functools
+import salt.utils.json
 from salt.exceptions import CommandExecutionError, SaltRenderError
-from salt.ext.six import string_types
+from salt.ext import six
 
 log = logging.getLogger(__name__)
 
@@ -243,7 +263,7 @@ def _reinterpreted_state(state):
 
     is_json = False
     try:
-        data = json.loads(out)
+        data = salt.utils.json.loads(out)
         if not isinstance(data, dict):
             return _failout(
                 state,
@@ -256,7 +276,7 @@ def _reinterpreted_state(state):
             out = out[idx + 1:]
         data = {}
         try:
-            for item in salt.utils.shlex_split(out):
+            for item in salt.utils.args.shlex_split(out):
                 key, val = item.split('=')
                 data[key] = val
         except ValueError:
@@ -296,9 +316,9 @@ def _failout(state, msg):
 
 
 def _is_true(val):
-    if val and str(val).lower() in ('true', 'yes', '1'):
+    if val and six.text_type(val).lower() in ('true', 'yes', '1'):
         return True
-    elif str(val).lower() in ('false', 'no', '0'):
+    elif six.text_type(val).lower() in ('false', 'no', '0'):
         return False
     raise ValueError('Failed parsing boolean value: {0}'.format(val))
 
@@ -315,13 +335,14 @@ def mod_run_check(cmd_kwargs, onlyif, unless, creates):
     # to quote problems
     cmd_kwargs = copy.deepcopy(cmd_kwargs)
     cmd_kwargs['use_vt'] = False
+    cmd_kwargs['bg'] = False
 
     if onlyif is not None:
-        if isinstance(onlyif, string_types):
+        if isinstance(onlyif, six.string_types):
             cmd = __salt__['cmd.retcode'](onlyif, ignore_retcode=True, python_shell=True, **cmd_kwargs)
             log.debug('Last command return code: {0}'.format(cmd))
             if cmd != 0:
-                return {'comment': 'onlyif execution failed',
+                return {'comment': 'onlyif condition is false',
                         'skip_watch': True,
                         'result': True}
         elif isinstance(onlyif, list):
@@ -329,22 +350,22 @@ def mod_run_check(cmd_kwargs, onlyif, unless, creates):
                 cmd = __salt__['cmd.retcode'](entry, ignore_retcode=True, python_shell=True, **cmd_kwargs)
                 log.debug('Last command \'{0}\' return code: {1}'.format(entry, cmd))
                 if cmd != 0:
-                    return {'comment': 'onlyif execution failed: {0}'.format(entry),
+                    return {'comment': 'onlyif condition is false: {0}'.format(entry),
                             'skip_watch': True,
                             'result': True}
-        elif not isinstance(onlyif, string_types):
+        elif not isinstance(onlyif, six.string_types):
             if not onlyif:
                 log.debug('Command not run: onlyif did not evaluate to string_type')
-                return {'comment': 'onlyif execution failed',
+                return {'comment': 'onlyif condition is false',
                         'skip_watch': True,
                         'result': True}
 
     if unless is not None:
-        if isinstance(unless, string_types):
+        if isinstance(unless, six.string_types):
             cmd = __salt__['cmd.retcode'](unless, ignore_retcode=True, python_shell=True, **cmd_kwargs)
             log.debug('Last command return code: {0}'.format(cmd))
             if cmd == 0:
-                return {'comment': 'unless execution succeeded',
+                return {'comment': 'unless condition is true',
                         'skip_watch': True,
                         'result': True}
         elif isinstance(unless, list):
@@ -353,17 +374,17 @@ def mod_run_check(cmd_kwargs, onlyif, unless, creates):
                 cmd.append(__salt__['cmd.retcode'](entry, ignore_retcode=True, python_shell=True, **cmd_kwargs))
                 log.debug('Last command return code: {0}'.format(cmd))
             if all([c == 0 for c in cmd]):
-                return {'comment': 'unless execution succeeded',
+                return {'comment': 'unless condition is true',
                         'skip_watch': True,
                         'result': True}
-        elif not isinstance(unless, string_types):
+        elif not isinstance(unless, six.string_types):
             if unless:
                 log.debug('Command not run: unless did not evaluate to string_type')
-                return {'comment': 'unless execution succeeded',
+                return {'comment': 'unless condition is true',
                         'skip_watch': True,
                         'result': True}
 
-    if isinstance(creates, string_types) and os.path.exists(creates):
+    if isinstance(creates, six.string_types) and os.path.exists(creates):
         return {'comment': '{0} exists'.format(creates),
                 'result': True}
     elif isinstance(creates, list) and all([
@@ -387,14 +408,17 @@ def wait(name,
          stateful=False,
          umask=None,
          output_loglevel='debug',
+         hide_output=False,
          use_vt=False,
+         success_retcodes=None,
          **kwargs):
     '''
     Run the given command only if the watch statement calls it.
 
     .. note::
 
-        Use :mod:`cmd.run <salt.states.cmd.run>` with :mod:`onchange </ref/states/requisites#onchanges>` instead.
+        Use :mod:`cmd.run <salt.states.cmd.run>` together with :mod:`onchanges </ref/states/requisites#onchanges>`
+        instead of :mod:`cmd.wait <salt.states.cmd.wait>`.
 
     name
         The command to execute, remember that the command will execute with the
@@ -435,8 +459,7 @@ def wait(name,
             **no**, **on**, **off**, **true**, and **false** are all loaded as
             boolean ``True`` and ``False`` values, and must be enclosed in
             quotes to be used as strings. More info on this (and other) PyYAML
-            idiosyncrasies can be found :doc:`here
-            </topics/troubleshooting/yaml_idiosyncrasies>`.
+            idiosyncrasies can be found :ref:`here <yaml-idiosyncrasies>`.
 
         Variables as values are not evaluated. So $PATH in the following
         example is a literal '$PATH':
@@ -467,30 +490,39 @@ def wait(name,
         a state. For more information, see the :ref:`stateful-argument` section.
 
     creates
-        Only run if the file specified by ``creates`` does not exist.
+        Only run if the file or files specified by ``creates`` do not exist.
 
         .. versionadded:: 2014.7.0
 
-    output_loglevel
-        Control the loglevel at which the output from the command is logged.
-        Note that the command being run will still be logged (loglevel: DEBUG)
-        regardless, unless ``quiet`` is used for this value.
+    output_loglevel : debug
+        Control the loglevel at which the output from the command is logged to
+        the minion log.
+
+        .. note::
+            The command being run will still be logged at the ``debug``
+            loglevel regardless, unless ``quiet`` is used for this value.
+
+    hide_output : False
+        Suppress stdout and stderr in the state's results.
+
+        .. note::
+            This is separate from ``output_loglevel``, which only handles how
+            Salt logs to the minion log.
+
+        .. versionadded:: 2018.3.0
 
     use_vt
         Use VT utils (saltstack) to stream the command output more
         interactively to the console and the logs.
         This is experimental.
-    '''
-    if 'user' in kwargs or 'group' in kwargs:
-        salt.utils.warn_until(
-            'Oxygen',
-            'The legacy user/group arguments are deprecated. '
-            'Replace them with runas. '
-            'These arguments will be removed in Salt Oxygen.'
-        )
-        if kwargs['user'] is not None and runas is None:
-            runas = kwargs.pop('user')
 
+    success_retcodes: This parameter will be allow a list of
+        non-zero return codes that should be considered a success.  If the
+        return code returned from the run matches any in the provided list,
+        the return code will be overridden with zero.
+
+      .. versionadded:: Fluorine
+    '''
     # Ignoring our arguments is intentional.
     return {'name': name,
             'changes': {},
@@ -499,7 +531,7 @@ def wait(name,
 
 
 # Alias "cmd.watch" to "cmd.wait", as this is a common misconfiguration
-watch = salt.utils.alias_function(wait, 'watch')
+watch = salt.utils.functools.alias_function(wait, 'watch')
 
 
 def wait_script(name,
@@ -515,6 +547,7 @@ def wait_script(name,
                 umask=None,
                 use_vt=False,
                 output_loglevel='debug',
+                hide_output=False,
                 **kwargs):
     '''
     Download a script from a remote source and execute it only if a watch
@@ -570,8 +603,7 @@ def wait_script(name,
             **no**, **on**, **off**, **true**, and **false** are all loaded as
             boolean ``True`` and ``False`` values, and must be enclosed in
             quotes to be used as strings. More info on this (and other) PyYAML
-            idiosyncrasies can be found :doc:`here
-            </topics/troubleshooting/yaml_idiosyncrasies>`.
+            idiosyncrasies can be found :ref:`here <yaml-idiosyncrasies>`.
 
         Variables as values are not evaluated. So $PATH in the following
         example is a literal '$PATH':
@@ -606,22 +638,30 @@ def wait_script(name,
         interactively to the console and the logs.
         This is experimental.
 
-     output_loglevel
-        Control the loglevel at which the output from the command is logged.
-        Note that the command being run will still be logged (loglevel: DEBUG)
-        regardless, unless ``quiet`` is used for this value.
+    output_loglevel : debug
+        Control the loglevel at which the output from the command is logged to
+        the minion log.
 
+        .. note::
+            The command being run will still be logged at the ``debug``
+            loglevel regardless, unless ``quiet`` is used for this value.
+
+    hide_output : False
+        Suppress stdout and stderr in the state's results.
+
+        .. note::
+            This is separate from ``output_loglevel``, which only handles how
+            Salt logs to the minion log.
+
+        .. versionadded:: 2018.3.0
+
+    success_retcodes: This parameter will be allow a list of
+        non-zero return codes that should be considered a success.  If the
+        return code returned from the run matches any in the provided list,
+        the return code will be overridden with zero.
+
+      .. versionadded:: Fluorine
     '''
-    if 'user' in kwargs or 'group' in kwargs:
-        salt.utils.warn_until(
-            'Oxygen',
-            'The legacy user/group arguments are deprecated. '
-            'Replace them with runas. '
-            'These arguments will be removed in Salt Oxygen.'
-        )
-        if kwargs['user'] is not None and runas is None:
-            runas = kwargs.pop('user')
-
     # Ignoring our arguments is intentional.
     return {'name': name,
             'changes': {},
@@ -637,13 +677,15 @@ def run(name,
         runas=None,
         shell=None,
         env=None,
+        prepend_path=None,
         stateful=False,
         umask=None,
         output_loglevel='debug',
-        quiet=False,
+        hide_output=False,
         timeout=None,
         ignore_timeout=False,
         use_vt=False,
+        success_retcodes=None,
         **kwargs):
     '''
     Run a command if certain circumstances are met.  Use ``cmd.wait`` if you
@@ -655,11 +697,11 @@ def run(name,
 
     onlyif
         A command to run as a check, run the named command only if the command
-        passed to the ``onlyif`` option returns true
+        passed to the ``onlyif`` option returns a zero exit status
 
     unless
         A command to run as a check, only run the named command if the command
-        passed to the ``unless`` option returns false
+        passed to the ``unless`` option returns a non-zero exit status
 
     cwd
         The current working directory to execute the command in, defaults to
@@ -688,8 +730,7 @@ def run(name,
             **no**, **on**, **off**, **true**, and **false** are all loaded as
             boolean ``True`` and ``False`` values, and must be enclosed in
             quotes to be used as strings. More info on this (and other) PyYAML
-            idiosyncrasies can be found :doc:`here
-            </topics/troubleshooting/yaml_idiosyncrasies>`.
+            idiosyncrasies can be found :ref:`here <yaml-idiosyncrasies>`.
 
         Variables as values are not evaluated. So $PATH in the following
         example is a literal '$PATH':
@@ -712,6 +753,12 @@ def run(name,
                 - env:
                   - PATH: {{ [current_path, '/my/special/bin']|join(':') }}
 
+    prepend_path
+        $PATH segment to prepend (trailing ':' not necessary) to $PATH. This is
+        an easier alternative to the Jinja workaround.
+
+        .. versionadded:: 2018.3.0
+
     stateful
         The command being executed is expected to return data about executing
         a state. For more information, see the :ref:`stateful-argument` section.
@@ -719,16 +766,29 @@ def run(name,
     umask
         The umask (in octal) to use when running the command.
 
-    output_loglevel
-        Control the loglevel at which the output from the command is logged.
-        Note that the command being run will still be logged (loglevel: DEBUG)
-        regardless, unless ``quiet`` is used for this value.
+    output_loglevel : debug
+        Control the loglevel at which the output from the command is logged to
+        the minion log.
+
+        .. note::
+            The command being run will still be logged at the ``debug``
+            loglevel regardless, unless ``quiet`` is used for this value.
+
+    hide_output : False
+        Suppress stdout and stderr in the state's results.
+
+        .. note::
+            This is separate from ``output_loglevel``, which only handles how
+            Salt logs to the minion log.
+
+        .. versionadded:: 2018.3.0
 
     quiet
-        The command will be executed quietly, meaning no log entries of the
-        actual command or its return data. This is deprecated as of the
-        **2014.1.0** release, and is being replaced with
-        ``output_loglevel: quiet``.
+        This option no longer has any functionality and will be removed, please
+        set ``output_loglevel`` to ``quiet`` to suppress logging of the
+        command.
+
+        .. deprecated:: 2014.1.0
 
     timeout
         If the command has not terminated after timeout seconds, send the
@@ -741,14 +801,27 @@ def run(name,
         .. versionadded:: 2015.8.0
 
     creates
-        Only run if the file specified by ``creates`` does not exist.
+        Only run if the file or files specified by ``creates`` do not exist.
 
         .. versionadded:: 2014.7.0
 
-    use_vt
+    use_vt : False
         Use VT utils (saltstack) to stream the command output more
         interactively to the console and the logs.
         This is experimental.
+
+    bg : False
+        If ``True``, run command in background and do not await or deliver its
+        results.
+
+        .. versionadded:: 2016.3.6
+
+    success_retcodes: This parameter will be allow a list of
+        non-zero return codes that should be considered a success.  If the
+        return code returned from the run matches any in the provided list,
+        the return code will be overridden with zero.
+
+      .. versionadded:: Fluorine
 
     .. note::
 
@@ -770,10 +843,27 @@ def run(name,
                 - reload_modules: True
 
     '''
-    ### NOTE: The keyword arguments in **kwargs are ignored in this state, but
-    ###       cannot be removed from the function definition, otherwise the use
-    ###       of unsupported arguments in a cmd.run state will result in a
-    ###       traceback.
+    ### NOTE: The keyword arguments in **kwargs are passed directly to the
+    ###       ``cmd.run_all`` function and cannot be removed from the function
+    ###       definition, otherwise the use of unsupported arguments in a
+    ###       ``cmd.run`` state will result in a traceback.
+
+    ret = {'name': name,
+           'changes': {},
+           'result': False,
+           'comment': ''}
+
+    if 'quiet' in kwargs:
+        quiet = kwargs.pop('quiet')
+        msg = (
+            'The \'quiet\' argument for cmd.run has been deprecated since '
+            '2014.1.0 and will be removed as of the Neon release. Please set '
+            '\'output_loglevel\' to \'quiet\' instead.'
+        )
+        salt.utils.versions.warn_until('Neon', msg)
+        ret.setdefault('warnings', []).append(msg)
+    else:
+        quiet = False
 
     test_name = None
     if not isinstance(stateful, list):
@@ -783,11 +873,6 @@ def run(name,
     if __opts__['test'] and test_name:
         name = test_name
 
-    ret = {'name': name,
-           'changes': {},
-           'result': False,
-           'comment': ''}
-
     # Need the check for None here, if env is not provided then it falls back
     # to None and it is assumed that the environment is not being overridden.
     if env is not None and not isinstance(env, (list, dict)):
@@ -795,24 +880,18 @@ def run(name,
                           'documentation.')
         return ret
 
-    if 'user' in kwargs or 'group' in kwargs:
-        salt.utils.warn_until(
-            'Oxygen',
-            'The legacy user/group arguments are deprecated. '
-            'Replace them with runas. '
-            'These arguments will be removed in Salt Oxygen.'
-        )
-        if kwargs['user'] is not None and runas is None:
-            runas = kwargs.pop('user')
-
-    cmd_kwargs = {'cwd': cwd,
-                  'runas': runas,
-                  'use_vt': use_vt,
-                  'shell': shell or __grains__['shell'],
-                  'env': env,
-                  'umask': umask,
-                  'output_loglevel': output_loglevel,
-                  'quiet': quiet}
+    cmd_kwargs = copy.deepcopy(kwargs)
+    cmd_kwargs.update({'cwd': cwd,
+                       'runas': runas,
+                       'use_vt': use_vt,
+                       'shell': shell or __grains__['shell'],
+                       'env': env,
+                       'prepend_path': prepend_path,
+                       'umask': umask,
+                       'output_loglevel': output_loglevel,
+                       'hide_output': hide_output,
+                       'quiet': quiet,
+                       'success_retcodes': success_retcodes})
 
     cret = mod_run_check(cmd_kwargs, onlyif, unless, creates)
     if isinstance(cret, dict):
@@ -837,7 +916,7 @@ def run(name,
             name, timeout=timeout, python_shell=True, **cmd_kwargs
         )
     except CommandExecutionError as err:
-        ret['comment'] = str(err)
+        ret['comment'] = six.text_type(err)
         return ret
 
     ret['changes'] = cmd_all
@@ -873,8 +952,10 @@ def script(name,
            timeout=None,
            use_vt=False,
            output_loglevel='debug',
+           hide_output=False,
            defaults=None,
            context=None,
+           success_retcodes=None,
            **kwargs):
     '''
     Download a script and execute it with specified arguments.
@@ -928,8 +1009,7 @@ def script(name,
             **no**, **on**, **off**, **true**, and **false** are all loaded as
             boolean ``True`` and ``False`` values, and must be enclosed in
             quotes to be used as strings. More info on this (and other) PyYAML
-            idiosyncrasies can be found :doc:`here
-            </topics/troubleshooting/yaml_idiosyncrasies>`.
+            idiosyncrasies can be found :ref:`here <yaml-idiosyncrasies>`.
 
         Variables as values are not evaluated. So $PATH in the following
         example is a literal '$PATH':
@@ -973,7 +1053,7 @@ def script(name,
         'arg two' arg3"
 
     creates
-        Only run if the file specified by ``creates`` does not exist.
+        Only run if the file or files specified by ``creates`` do not exist.
 
         .. versionadded:: 2014.7.0
 
@@ -992,10 +1072,29 @@ def script(name,
 
         Default context passed to the template.
 
-    output_loglevel
-        Control the loglevel at which the output from the command is logged.
-        Note that the command being run will still be logged (loglevel: DEBUG)
-        regardless, unless ``quiet`` is used for this value.
+    output_loglevel : debug
+        Control the loglevel at which the output from the command is logged to
+        the minion log.
+
+        .. note::
+            The command being run will still be logged at the ``debug``
+            loglevel regardless, unless ``quiet`` is used for this value.
+
+    hide_output : False
+        Suppress stdout and stderr in the state's results.
+
+        .. note::
+            This is separate from ``output_loglevel``, which only handles how
+            Salt logs to the minion log.
+
+        .. versionadded:: 2018.3.0
+
+    success_retcodes: This parameter will be allow a list of
+        non-zero return codes that should be considered a success.  If the
+        return code returned from the run matches any in the provided list,
+        the return code will be overridden with zero.
+
+      .. versionadded:: Fluorine
 
     '''
     test_name = None
@@ -1031,16 +1130,6 @@ def script(name,
     if context:
         tmpctx.update(context)
 
-    if 'user' in kwargs or 'group' in kwargs:
-        salt.utils.warn_until(
-            'Oxygen',
-            'The legacy user/group arguments are deprecated. '
-            'Replace them with runas. '
-            'These arguments will be removed in Salt Oxygen.'
-        )
-        if kwargs['user'] is not None and runas is None:
-            runas = kwargs.pop('user')
-
     cmd_kwargs = copy.deepcopy(kwargs)
     cmd_kwargs.update({'runas': runas,
                        'shell': shell or __grains__['shell'],
@@ -1052,9 +1141,11 @@ def script(name,
                        'umask': umask,
                        'timeout': timeout,
                        'output_loglevel': output_loglevel,
+                       'hide_output': hide_output,
                        'use_vt': use_vt,
                        'context': tmpctx,
-                       'saltenv': __env__})
+                       'saltenv': __env__,
+                       'success_retcodes': success_retcodes})
 
     run_check_cmd_kwargs = {
         'cwd': cwd,
@@ -1067,7 +1158,7 @@ def script(name,
         source = name
 
     # If script args present split from name and define args
-    if len(name.split()) > 1:
+    if not cmd_kwargs.get('args', None) and len(name.split()) > 1:
         cmd_kwargs.update({'args': name.split(' ', 1)[1]})
 
     cret = mod_run_check(
@@ -1079,7 +1170,7 @@ def script(name,
 
     if __opts__['test'] and not test_name:
         ret['result'] = None
-        ret['comment'] = 'Command {0!r} would have been ' \
+        ret['comment'] = 'Command \'{0}\' would have been ' \
                          'executed'.format(name)
         return _reinterpreted_state(ret) if stateful else ret
 
@@ -1094,7 +1185,7 @@ def script(name,
     try:
         cmd_all = __salt__['cmd.script'](source, python_shell=True, **cmd_kwargs)
     except (CommandExecutionError, SaltRenderError, IOError) as err:
-        ret['comment'] = str(err)
+        ret['comment'] = six.text_type(err)
         return ret
 
     ret['changes'] = cmd_all
@@ -1104,9 +1195,9 @@ def script(name,
         ret['result'] = not bool(cmd_all['retcode'])
     if ret.get('changes', {}).get('cache_error'):
         ret['comment'] = 'Unable to cache script {0} from saltenv ' \
-                         '{1!r}'.format(source, __env__)
+                         '\'{1}\''.format(source, __env__)
     else:
-        ret['comment'] = 'Command {0!r} run'.format(name)
+        ret['comment'] = 'Command \'{0}\' run'.format(name)
     if stateful:
         ret = _reinterpreted_state(ret)
     if __opts__['test'] and cmd_all['retcode'] == 0 and ret['changes']:
@@ -1122,6 +1213,7 @@ def call(name,
          unless=None,
          creates=None,
          output_loglevel='debug',
+         hide_output=False,
          use_vt=False,
          **kwargs):
     '''
@@ -1153,7 +1245,7 @@ def call(name,
             'name': name
             'changes': {'retval': result},
             'result': True if result is None else bool(result),
-            'comment': result if isinstance(result, string_types) else ''
+            'comment': result if isinstance(result, six.string_types) else ''
         }
     '''
     ret = {'name': name,
@@ -1167,6 +1259,7 @@ def call(name,
                   'env': kwargs.get('env'),
                   'use_vt': use_vt,
                   'output_loglevel': output_loglevel,
+                  'hide_output': hide_output,
                   'umask': kwargs.get('umask')}
 
     cret = mod_run_check(cmd_kwargs, onlyif, unless, creates)
@@ -1184,7 +1277,7 @@ def call(name,
         # result must be JSON serializable else we get an error
         ret['changes'] = {'retval': result}
         ret['result'] = True if result is None else bool(result)
-        if isinstance(result, string_types):
+        if isinstance(result, six.string_types):
             ret['comment'] = result
         return ret
 
@@ -1199,6 +1292,7 @@ def wait_call(name,
               stateful=False,
               use_vt=False,
               output_loglevel='debug',
+              hide_output=False,
               **kwargs):
     # Ignoring our arguments is intentional.
     return {'name': name,

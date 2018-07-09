@@ -3,8 +3,8 @@
 Test States
 ===========
 
-Provide test case states that enable easy testing of things to do with
- state calls, e.g. running, calling, logging, output filtering etc.
+Provide test case states that enable easy testing of things to do with state
+calls, e.g. running, calling, logging, output filtering etc.
 
 .. code-block:: yaml
 
@@ -44,15 +44,16 @@ Provide test case states that enable easy testing of things to do with
         - integer:
             - bar
 '''
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 
 # Import Python libs
-import logging
 import random
-from salt.state import _gen_tag
-from salt.exceptions import SaltInvocationError
 
-log = logging.getLogger(__name__)
+# Import Salt libs
+import salt.utils.data
+from salt.state import _gen_tag
+from salt.ext import six
+from salt.exceptions import SaltInvocationError
 
 
 def nop(name, **kwargs):
@@ -189,6 +190,8 @@ def configurable_test_state(name, changes=True, result=True, comment=''):
         Do we return successfully or not?
         Accepts True, False, and 'Random'
         Default is True
+        If test is True and changes is True, this will be None.  If test is
+        True and and changes is False, this will be True.
     comment:
         String to fill the comment field with.
         Default is ''
@@ -199,33 +202,29 @@ def configurable_test_state(name, changes=True, result=True, comment=''):
         'result': False,
         'comment': comment
     }
+    change_data = {
+        'testing': {
+            'old': 'Unchanged',
+            'new': 'Something pretended to change'
+        }
+    }
 
     if changes == 'Random':
         if random.choice([True, False]):
             # Following the docs as written here
             # http://docs.saltstack.com/ref/states/writing.html#return-data
-            ret['changes'] = {
-                'testing': {
-                    'old': 'Unchanged',
-                    'new': 'Something pretended to change'
-                }
-            }
+            ret['changes'] = change_data
     elif changes is True:
         # If changes is True we place our dummy change dictionary into it.
         # Following the docs as written here
         # http://docs.saltstack.com/ref/states/writing.html#return-data
-        ret['changes'] = {
-            'testing': {
-                'old': 'Unchanged',
-                'new': 'Something pretended to change'
-            }
-        }
+        ret['changes'] = change_data
     elif changes is False:
         ret['changes'] = {}
     else:
         err = ('You have specified the state option \'Changes\' with'
-            ' invalid arguments. It must be either '
-            ' \'True\', \'False\', or \'Random\'')
+               ' invalid arguments. It must be either '
+               ' \'True\', \'False\', or \'Random\'')
         raise SaltInvocationError(err)
 
     if result == 'Random':
@@ -242,8 +241,8 @@ def configurable_test_state(name, changes=True, result=True, comment=''):
                                   '\'Random\'')
 
     if __opts__['test']:
-        ret['result'] = None
-        ret['comment'] = 'This is a test'
+        ret['result'] = True if changes is False else None
+        ret['comment'] = 'This is a test' if not comment else comment
 
     return ret
 
@@ -347,11 +346,11 @@ def _if_str_then_list(listing):
     A str will be turned into a list with the
     str as its only element.
     '''
-    if type(listing) is str:
-        return [listing]
-    elif type(listing) is not list:
+    if isinstance(listing, six.string_types):
+        return [salt.utils.stringutils.to_unicode(listing)]
+    elif not isinstance(listing, list):
         raise TypeError
-    return listing
+    return salt.utils.data.decode_list(listing)
 
 
 def check_pillar(name,

@@ -6,12 +6,12 @@ Currently this only works when run through a proxy minion.
 
 .. versionadded:: 2015.8.2
 '''
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 
-import json
 import logging
-import salt.utils
 import salt.utils.http
+import salt.utils.json
+import salt.utils.platform
 from salt.exceptions import get_error_message
 
 
@@ -21,7 +21,7 @@ log = logging.getLogger(__file__)
 
 def __virtual__():
     # only valid in proxy minions for now
-    return salt.utils.is_proxy() and 'proxy' in __opts__
+    return salt.utils.platform.is_proxy() and 'proxy' in __opts__
 
 
 def _base_url():
@@ -54,7 +54,9 @@ def jobs():
     Return a list of the currently installed job names.
 
     CLI Example:
+
     .. code-block:: bash
+
         salt chronos-minion-id chronos.jobs
     '''
     job_names = _jobs().keys()
@@ -67,7 +69,9 @@ def has_job(name):
     Return whether the given job is currently configured.
 
     CLI Example:
+
     .. code-block:: bash
+
         salt chronos-minion-id chronos.has_job my-job
     '''
     return name in _jobs()
@@ -78,7 +82,9 @@ def job(name):
     Return the current server configuration for the specified job.
 
     CLI Example:
+
     .. code-block:: bash
+
         salt chronos-minion-id chronos.job my-job
     '''
     jobs = _jobs()
@@ -92,12 +98,14 @@ def update_job(name, config):
     Update the specified job with the given configuration.
 
     CLI Example:
+
     .. code-block:: bash
+
         salt chronos-minion-id chronos.update_job my-job '<config yaml>'
     '''
     if 'name' not in config:
         config['name'] = name
-    data = json.dumps(config)
+    data = salt.utils.json.dumps(config)
     try:
         response = salt.utils.http.query(
             "{0}/scheduler/iso8601".format(_base_url()),
@@ -123,7 +131,9 @@ def rm_job(name):
     Remove the specified job from the server.
 
     CLI Example:
+
     .. code-block:: bash
+
         salt chronos-minion-id chronos.rm_job my-job
     '''
     response = salt.utils.http.query(

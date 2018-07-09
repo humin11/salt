@@ -45,7 +45,7 @@ Changes:
   * a983942 Merge pull request `#25095`_ from jfindlay/win_groupadd_test
   * 564dffd depend on win libs rather than mocking them
 
-  * 9b9aeb8 resolved all erors.
+  * 9b9aeb8 resolved all errors.
 
   * aaf8935 adding win_groupadd unit test case.
 
@@ -1251,12 +1251,12 @@ Changes:
 - **PR** `#24456`_: (*rallytime*) Back-port `#24441`_ to 2015.5
   @ *2015-06-05T22:32:25Z*
 
-  - **PR** `#24441`_: (*arthurlogilab*) [doc] Alignement fix on external_auth documentation
+  - **PR** `#24441`_: (*arthurlogilab*) [doc] Alignment fix on external_auth documentation
     | refs: `#24456`_
   * ced558a Merge pull request `#24456`_ from rallytime/`bp-24441`_
   * 7002855 yaml indentations should be 2 spaces
 
-  * 21b51ab [doc] Alignement fix on external_auth documentation
+  * 21b51ab [doc] Alignment fix on external_auth documentation
 
 - **PR** `#24398`_: (*kiorky*) VirtualName for states.apt
   | refs: `#24399`_

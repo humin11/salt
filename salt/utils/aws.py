@@ -8,7 +8,7 @@ This is a base library used by a number of AWS services.
 
 :depends: requests
 '''
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 
 # Import Python libs
 import sys
@@ -20,8 +20,10 @@ import hmac
 import logging
 import salt.config
 import re
+from salt.ext import six
 
 # Import Salt libs
+import salt.utils.hashutils
 import salt.utils.xmlutil as xml
 from salt._compat import ElementTree as ET
 
@@ -36,7 +38,7 @@ from salt.ext.six.moves import map, range, zip
 from salt.ext.six.moves.urllib.parse import urlencode, urlparse
 # pylint: enable=import-error,redefined-builtin,no-name-in-module
 
-LOG = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 DEFAULT_LOCATION = 'us-east-1'
 DEFAULT_AWS_API_VERSION = '2014-10-01'
 AWS_RETRY_CODES = [
@@ -192,7 +194,7 @@ def assumed_creds(prov_dict, role_arn, location=None):
                               verify=True)
 
     if result.status_code >= 400:
-        LOG.info('AssumeRole response: {0}'.format(result.content))
+        log.info('AssumeRole response: %s', result.content)
     result.raise_for_status()
     resp = result.json()
 
@@ -204,7 +206,7 @@ def assumed_creds(prov_dict, role_arn, location=None):
 def sig4(method, endpoint, params, prov_dict,
          aws_api_version=DEFAULT_AWS_API_VERSION, location=None,
          product='ec2', uri='/', requesturl=None, data='', headers=None,
-         role_arn=None):
+         role_arn=None, payload_hash=None):
     '''
     Sign a query against AWS services using Signature Version 4 Signing
     Process. This is documented at:
@@ -235,29 +237,32 @@ def sig4(method, endpoint, params, prov_dict,
 
     amzdate = timenow.strftime('%Y%m%dT%H%M%SZ')
     datestamp = timenow.strftime('%Y%m%d')
-
-    canonical_headers = 'host:{0}\nx-amz-date:{1}'.format(
-        endpoint,
-        amzdate,
-    )
-
-    signed_headers = 'host;x-amz-date'
-
+    new_headers = {}
     if isinstance(headers, dict):
-        for header in sorted(headers.keys()):
-            canonical_headers += '\n{0}:{1}'.format(header, headers[header])
-            signed_headers += ';{0}'.format(header)
-    canonical_headers += '\n'
-
-    if token != '':
-        canonical_headers += 'x-amz-security-token:{0}\n'.format(token)
-        signed_headers += ';x-amz-security-token'
-
-    algorithm = 'AWS4-HMAC-SHA256'
+        new_headers = headers.copy()
 
     # Create payload hash (hash of the request body content). For GET
     # requests, the payload is an empty string ('').
-    payload_hash = hashlib.sha256(data).hexdigest()
+    if not payload_hash:
+        payload_hash = salt.utils.hashutils.sha256_digest(data)
+
+    new_headers['X-Amz-date'] = amzdate
+    new_headers['host'] = endpoint
+    new_headers['x-amz-content-sha256'] = payload_hash
+    a_canonical_headers = []
+    a_signed_headers = []
+
+    if token != '':
+        new_headers['X-Amz-security-token'] = token
+
+    for header in sorted(new_headers.keys(), key=six.text_type.lower):
+        lower_header = header.lower()
+        a_canonical_headers.append('{0}:{1}'.format(lower_header, new_headers[header].strip()))
+        a_signed_headers.append(lower_header)
+    canonical_headers = '\n'.join(a_canonical_headers) + '\n'
+    signed_headers = ';'.join(a_signed_headers)
+
+    algorithm = 'AWS4-HMAC-SHA256'
 
     # Combine elements to create create canonical request
     canonical_request = '\n'.join((
@@ -275,7 +280,7 @@ def sig4(method, endpoint, params, prov_dict,
         algorithm,
         amzdate,
         credential_scope,
-        hashlib.sha256(canonical_request).hexdigest()
+        salt.utils.hashutils.sha256_digest(canonical_request)
     ))
 
     # Create the signing key using the function defined above.
@@ -303,18 +308,7 @@ def sig4(method, endpoint, params, prov_dict,
             signature,
         )
 
-    new_headers = {
-        'x-amz-date': amzdate,
-        'x-amz-content-sha256': payload_hash,
-        'Authorization': authorization_header,
-    }
-    if isinstance(headers, dict):
-        for header in sorted(headers.keys()):
-            new_headers[header] = headers[header]
-
-    # Add in security token if we have one
-    if token != '':
-        new_headers['X-Amz-Security-Token'] = token
+    new_headers['Authorization'] = authorization_header
 
     requesturl = '{0}?{1}'.format(requesturl, querystring)
     return new_headers, requesturl
@@ -397,7 +391,7 @@ def query(params=None, setname=None, requesturl=None, location=None,
     service_url = prov_dict.get('service_url', 'amazonaws.com')
 
     if not location:
-        location = get_location(opts, provider)
+        location = get_location(opts, prov_dict)
 
     if endpoint is None:
         if not requesturl:
@@ -415,12 +409,12 @@ def query(params=None, setname=None, requesturl=None, location=None,
                                 'like https://some.aws.endpoint/?args').format(
                                     requesturl
                                 )
-                LOG.error(endpoint_err)
+                log.error(endpoint_err)
                 if return_url is True:
                     return {'error': endpoint_err}, requesturl
                 return {'error': endpoint_err}
 
-    LOG.debug('Using AWS endpoint: {0}'.format(endpoint))
+    log.debug('Using AWS endpoint: %s', endpoint)
     method = 'GET'
 
     aws_api_version = prov_dict.get(
@@ -448,19 +442,14 @@ def query(params=None, setname=None, requesturl=None, location=None,
 
     attempts = 5
     while attempts > 0:
-        LOG.debug('AWS Request: {0}'.format(requesturl))
-        LOG.trace('AWS Request Parameters: {0}'.format(params_with_headers))
+        log.debug('AWS Request: %s', requesturl)
+        log.trace('AWS Request Parameters: %s', params_with_headers)
         try:
             result = requests.get(requesturl, headers=headers, params=params_with_headers)
-            LOG.debug(
-                'AWS Response Status Code: {0}'.format(
-                    result.status_code
-                )
-            )
-            LOG.trace(
-                'AWS Response Text: {0}'.format(
-                    result.text
-                )
+            log.debug('AWS Response Status Code: %s', result.status_code)
+            log.trace(
+                'AWS Response Text: %s',
+                result.text.encode(result.encoding if result.encoding else 'utf-8')
             )
             result.raise_for_status()
             break
@@ -472,35 +461,34 @@ def query(params=None, setname=None, requesturl=None, location=None,
             err_code = data.get('Errors', {}).get('Error', {}).get('Code', '')
             if attempts > 0 and err_code and err_code in AWS_RETRY_CODES:
                 attempts -= 1
-                LOG.error(
-                    'AWS Response Status Code and Error: [{0} {1}] {2}; '
-                    'Attempts remaining: {3}'.format(
-                        exc.response.status_code, exc, data, attempts
-                    )
+                log.error(
+                    'AWS Response Status Code and Error: [%s %s] %s; '
+                    'Attempts remaining: %s',
+                    exc.response.status_code, exc, data, attempts
                 )
                 # Wait a bit before continuing to prevent throttling
                 time.sleep(2)
                 continue
 
-            LOG.error(
-                'AWS Response Status Code and Error: [{0} {1}] {2}'.format(
-                    exc.response.status_code, exc, data
-                )
+            log.error(
+                'AWS Response Status Code and Error: [%s %s] %s',
+                exc.response.status_code, exc, data
             )
             if return_url is True:
                 return {'error': data}, requesturl
             return {'error': data}
     else:
-        LOG.error(
-            'AWS Response Status Code and Error: [{0} {1}] {2}'.format(
-                exc.response.status_code, exc, data
-            )
+        log.error(
+            'AWS Response Status Code and Error: [%s %s] %s',
+            exc.response.status_code, exc, data
         )
         if return_url is True:
             return {'error': data}, requesturl
         return {'error': data}
 
-    response = result.text
+    response = result.text.encode(
+        result.encoding if result.encoding else 'utf-8'
+    )
 
     root = ET.fromstring(response)
     items = root[1]
@@ -537,7 +525,7 @@ def get_region_from_metadata():
     global __Location__
 
     if __Location__ == 'do-not-get-from-metadata':
-        LOG.debug('Previously failed to get AWS region from metadata. Not trying again.')
+        log.debug('Previously failed to get AWS region from metadata. Not trying again.')
         return None
 
     # Cached region
@@ -551,7 +539,7 @@ def get_region_from_metadata():
             proxies={'http': ''}, timeout=AWS_METADATA_TIMEOUT,
         )
     except requests.exceptions.RequestException:
-        LOG.warning('Failed to get AWS region from instance metadata.', exc_info=True)
+        log.warning('Failed to get AWS region from instance metadata.', exc_info=True)
         # Do not try again
         __Location__ = 'do-not-get-from-metadata'
         return None
@@ -561,13 +549,13 @@ def get_region_from_metadata():
         __Location__ = region
         return __Location__
     except (ValueError, KeyError):
-        LOG.warning('Failed to decode JSON from instance metadata.')
+        log.warning('Failed to decode JSON from instance metadata.')
         return None
 
     return None
 
 
-def get_location(opts, provider=None):
+def get_location(opts=None, provider=None):
     '''
     Return the region to use, in this order:
         opts['location']
@@ -575,7 +563,11 @@ def get_location(opts, provider=None):
         get_region_from_metadata()
         DEFAULT_LOCATION
     '''
-    ret = opts.get('location', provider.get('location'))
+    if opts is None:
+        opts = {}
+    ret = opts.get('location')
+    if ret is None and provider is not None:
+        ret = provider.get('location')
     if ret is None:
         ret = get_region_from_metadata()
     if ret is None:

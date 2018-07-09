@@ -2,13 +2,14 @@
 '''
 Proxy Minion for Cisco NX OS Switches
 
-.. versionadded: Carbon
+.. versionadded: 2016.11.0
 
-The Cisco NX OS Proxy Minion uses the built in SSHConnection module in `salt.utils.vt_helper`
+The Cisco NX OS Proxy Minion uses the built in SSHConnection module in :mod:`salt.utils.vt_helper <salt.utils.vt_helper>`
 
-To configure the proxy minion, include the following in
+To configure the proxy minion:
 
 .. code-block:: yaml
+
     proxy:
       proxytype: nxos
       host: 192.168.187.100
@@ -43,12 +44,7 @@ key_accept
 
 
 The functions from the proxy minion can be run from the salt commandline using
-the :doc:`salt.modules.nxos</ref/modules/all/salt.modules.nxos>` execution module.
-
-.. note::
-    The option `proxy_merge_grains_in_module: True` is required to have the NXOS
-    grains be availble from the proxy minion, for the Carbon release.  For
-    Nitrogen, the setting will be True by default.
+the :mod:`salt.modules.nxos<salt.modules.nxos>` execution module.
 
 .. note:
     If `multiprocessing: True` is set for the proxy minion config, each forked
@@ -57,16 +53,18 @@ the :doc:`salt.modules.nxos</ref/modules/all/salt.modules.nxos>` execution modul
     `multiprocessing: False`
 
 '''
-from __future__ import absolute_import
+
+# Import Python libs
+from __future__ import absolute_import, print_function, unicode_literals
+import logging
 import multiprocessing
 import re
 
-import salt.utils
+# Import Salt libs
 from salt.utils.pycrypto import gen_hash, secure_password
 from salt.utils.vt_helper import SSHConnection
 from salt.utils.vt import TerminalException
 
-import logging
 log = logging.getLogger(__file__)
 
 __proxyenabled__ = ['nxos']
@@ -79,14 +77,6 @@ def __virtual__():
     Only return if all the modules are available
     '''
     log.info('nxos proxy __virtual__() called...')
-
-    if __opts__.get('proxy_merge_grains_in_module', False) is False:
-        salt.utils.warn_until(
-            'Nitrogen',
-            'To use grains with the NXOS proxy minion, '
-            '`proxy_merge_grains_in_module: True` must be set in the '
-            'proxy minion config.'
-        )
 
     return __virtualname__
 
@@ -224,8 +214,8 @@ def check_password(username, password, encrypted=False):
     .. code-block: bash
 
         salt '*' nxos.cmd check_password username=admin password=admin
-        salt '*' nxos.cmd check_password username=admin \
-            password='$5$2fWwO2vK$s7.Hr3YltMNHuhywQQ3nfOd.gAPHgs3SOBYYdGT3E.A' \
+        salt '*' nxos.cmd check_password username=admin \\
+            password='$5$2fWwO2vK$s7.Hr3YltMNHuhywQQ3nfOd.gAPHgs3SOBYYdGT3E.A' \\
             encrypted=True
     '''
     hash_algorithms = {'1': 'md5',
@@ -266,8 +256,8 @@ def set_password(username, password, encrypted=False, role=None, crypt_salt=None
     .. code-block:: bash
 
         salt '*' nxos.cmd set_password admin TestPass
-        salt '*' nxos.cmd set_password admin \
-            password='$5$2fWwO2vK$s7.Hr3YltMNHuhywQQ3nfOd.gAPHgs3SOBYYdGT3E.A' \
+        salt '*' nxos.cmd set_password admin \\
+            password='$5$2fWwO2vK$s7.Hr3YltMNHuhywQQ3nfOd.gAPHgs3SOBYYdGT3E.A' \\
             encrypted=True
     '''
     password_line = get_user(username)

@@ -2,12 +2,15 @@
 '''
 Module for managing timezone on Windows systems.
 '''
-from __future__ import absolute_import
+from __future__ import absolute_import, unicode_literals, print_function
 
-# Import python libs
-import salt.utils
+# Import Python libs
 import logging
 import re
+
+# Import Salt libs
+import salt.utils.path
+import salt.utils.platform
 
 log = logging.getLogger(__name__)
 
@@ -251,6 +254,7 @@ LINTOWIN = {
     'Asia/Jerusalem': 'Israel Standard Time',
     'Asia/Kabul': 'Afghanistan Standard Time',
     'Asia/Karachi': 'Pakistan Standard Time',
+    'Asia/Kathmandu': 'Nepal Standard Time',
     'Asia/Katmandu': 'Nepal Standard Time',
     'Asia/Krasnoyarsk': 'North Asia Standard Time',
     'Asia/Kuala_Lumpur': 'Singapore Standard Time',
@@ -457,7 +461,7 @@ def __virtual__():
     '''
     Only load on windows
     '''
-    if salt.utils.is_windows() and salt.utils.which('tzutil'):
+    if salt.utils.platform.is_windows() and salt.utils.path.which('tzutil'):
         return __virtualname__
     return (False, "Module win_timezone: tzutil not found or is not on Windows client")
 

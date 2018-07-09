@@ -6,12 +6,12 @@ ProfitBricks provides an enterprise-grade Infrastructure as a Service (IaaS)
 solution that can be managed through a browser-based "Data Center Designer"
 (DCD) tool or via an easy to use API. A unique feature of the ProfitBricks
 platform is that it allows you to define your own settings for cores, memory,
-and disk size without being tied to a particular instance size.
+and disk size without being tied to a particular server size.
 
 Dependencies
 ============
 
-* profitbricks >= 2.3.0
+* profitbricks >= 4.1.1
 
 Configuration
 =============
@@ -23,6 +23,8 @@ Configuration
 .. code-block:: yaml
 
     my-profitbricks-config:
+      driver: profitbricks
+
       # Set the location of the salt-master
       #
       minion:
@@ -34,12 +36,12 @@ Configuration
       password: 123456
       # datacenter is the UUID of a pre-existing virtual data center.
       datacenter: 9e6709a0-6bf9-4bd6-8692-60349c70ce0e
+      # delete_volumes is forcing a deletion of all volumes attached to a server on a deletion of a server
+      delete_volumes: true
       # Connect to public LAN ID 1.
       public_lan: 1
       ssh_public_key: /path/to/id_rsa.pub
       ssh_private_key: /path/to/id_rsa
-
-      driver: profitbricks
 
 
 .. note::
@@ -65,6 +67,13 @@ A list of existing virtual data centers can be retrieved with the following comm
 
     salt-cloud -f list_datacenters my-profitbricks-config
 
+A new data center can be created with the following command:
+
+.. code-block:: bash
+
+    salt-cloud -f create_datacenter my-profitbricks-config name=example location=us/las description="my description"
+
+
 Authentication
 ==============
 
@@ -78,11 +87,12 @@ Here is an example of a profile:
 
 .. code-block:: yaml
 
-    profitbricks_production:
+    profitbricks_staging
       provider: my-profitbricks-config
       size: Micro Instance
-      image: 2f98b678-6e7e-11e5-b680-52540066fee9
-      disk_size: 10
+      image_alias: 'ubuntu:latest'
+      # image or image_alias must be provided
+      # image: 2f98b678-6e7e-11e5-b680-52540066fee9
       cores: 2
       ram: 4096
       public_lan: 1
@@ -91,6 +101,71 @@ Here is an example of a profile:
       ssh_private_key: /path/to/id_rsa
       ssh_interface: private_lan
 
+    profitbricks_production:
+      provider: my-profitbricks-config
+      image: Ubuntu-15.10-server-2016-05-01
+      image_password: MyPassword1
+      disk_type: SSD
+      disk_size: 40
+      cores: 8
+      cpu_family: INTEL_XEON
+      ram: 32768
+      public_lan: 1
+      public_ips:
+        - 172.217.18.174
+      private_lan: 2
+      private_ips:
+        - 192.168.100.10
+      public_firewall_rules:
+        Allow SSH:
+          protocol: TCP
+          source_ip: 1.2.3.4
+          port_range_start: 22
+          port_range_end: 22
+        Allow Ping:
+          protocol: ICMP
+          icmp_type: 8
+      ssh_public_key: /path/to/id_rsa.pub
+      ssh_private_key: /path/to/id_rsa
+      ssh_interface: private_lan
+      volumes:
+        db_data:
+          disk_size: 500
+        db_log:
+          disk_size: 50
+          disk_type: SSD
+
+Locations can be obtained using the ``--list-locations`` option for the ``salt-cloud``
+command:
+
+.. code-block:: bash
+
+    # salt-cloud --list-locations my-profitbricks-config
+
+Images can be obtained using the ``--list-sizes`` option for the ``salt-cloud``
+command:
+
+.. code-block:: bash
+
+    # salt-cloud --list-images my-profitbricks-config
+
+Sizes can be obtained using the ``--list-sizes`` option for the ``salt-cloud``
+command:
+
+.. code-block:: bash
+
+    # salt-cloud --list-sizes my-profitbricks-config
+
+.. versionadded:: Fluorine
+One or more public IP address can be reserved with the following command:
+
+.. code-block:: bash
+
+    # salt-cloud -f reserve_ipblock  my-profitbricks-config location='us/ewr' size=1
+
+Profile Specifics:
+------------------
+
 The following list explains some of the important properties.
 
 size
@@ -98,18 +173,37 @@ size
 
 .. code-block:: bash
 
-    salt-cloud --list-sizes my-profitbricks
+    salt-cloud --list-sizes my-profitbricks-config
 
 image
     Can be one of the options listed in the output of the following command:
 
 .. code-block:: bash
 
-    salt-cloud --list-images my-profitbricks
+    salt-cloud --list-images my-profitbricks-config
+
+image_alias
+   Can be one of the options listed in the output of the following command:
+
+.. code-block:: bash
+
+   salt-cloud -f list_images my-profitbricks-config
 
 disk_size
     This option allows you to override the size of the disk as defined by the
     size. The disk size is set in gigabytes (GB).
+
+disk_type
+    This option allow the disk type to be set to HDD or SSD. The default is
+    HDD.
+
+.. versionadded:: Fluorine
+image_password
+    A password is set on the image for the "root" or "Administrator" account.
+    This field may only be set during volume creation. Only valid with 
+    ProfitBricks supplied HDD (not ISO) images. The password must contain at 
+    least 8 and no more than 50 characters. Only these characters are 
+    allowed: [a-z][A-Z][0-9]
 
 cores
     This option allows you to override the number of CPU cores as defined by
@@ -121,14 +215,50 @@ ram
     forth.
 
 public_lan
-    This option will connect the instance to the specified public LAN. If no
+    This option will connect the server to the specified public LAN. If no
     LAN exists, then a new public LAN will be created. The value accepts a LAN
     ID (integer).
-    
+
+.. versionadded:: Fluorine
+public_ips
+    Public IPs assigned to the NIC in the public LAN.
+
+public_firewall_rules
+    This option allows for a list of firewall rules assigned to the public
+    network interface.
+
+    Firewall Rule Name:
+      protocol: <protocol> (TCP, UDP, ICMP)
+      source_mac: <source-mac>
+      source_ip: <source-ip>
+      target_ip: <target-ip>
+      port_range_start: <port-range-start>
+      port_range_end: <port-range-end>
+      icmp_type: <icmp-type>
+      icmp_code: <icmp-code>
+
 private_lan
-    This option will connect the instance to the specified private LAN. If no
+    This option will connect the server to the specified private LAN. If no
     LAN exists, then a new private LAN will be created. The value accepts a LAN
     ID (integer).
+
+.. versionadded:: Fluorine
+private_ips
+    Private IPs assigned in the private LAN. NAT setting is ignored when this setting is active.
+
+private_firewall_rules
+    This option allows for a list of firewall rules assigned to the private
+    network interface.
+
+    Firewall Rule Name:
+      protocol: <protocol> (TCP, UDP, ICMP)
+      source_mac: <source-mac>
+      source_ip: <source-ip>
+      target_ip: <target-ip>
+      port_range_start: <port-range-start>
+      port_range_end: <port-range-end>
+      icmp_type: <icmp-type>
+      icmp_code: <icmp-code>
 
 ssh_private_key
     Full path to the SSH private key file.
@@ -141,8 +271,21 @@ ssh_interface
     as bootstrapping the node) instead of the public LAN IP. The value accepts
     'private_lan'.
 
+cpu_family
+    This option allow the CPU family to be set to AMD_OPTERON or INTEL_XEON.
+    The default is AMD_OPTERON.
+
+volumes:
+    This option allows a list of additional volumes by name that will be
+    created and attached to the server. Each volume requires 'disk_size'
+    and, optionally, 'disk_type'. The default is HDD.
+
 deploy
     Set to False if Salt should not be installed on the node.
 
-For more information concerning cloud profiles, see :doc:`here
+wait_for_timeout
+    The timeout to wait in seconds for provisioning resources such as servers.
+    The default wait_for_timeout is 15 minutes.
+
+For more information concerning cloud profiles, see :ref:`here
 </topics/cloud/profiles>`.

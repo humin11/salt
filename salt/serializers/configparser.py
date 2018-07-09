@@ -1,19 +1,19 @@
 # -*- coding: utf-8 -*-
 '''
     salt.serializers.configparser
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
     .. versionadded:: 2016.3.0
 
     Implements a configparser serializer.
 '''
 
-from __future__ import absolute_import
+# Import Python libs
+from __future__ import absolute_import, print_function, unicode_literals
 
-import StringIO
+# Import Salt Libs
+from salt.ext import six
 import salt.ext.six.moves.configparser as configparser  # pylint: disable=E0611
-
-from salt.ext.six import string_types
 from salt.serializers import DeserializationError, SerializationError
 
 __all__ = ['deserialize', 'serialize', 'available']
@@ -29,14 +29,23 @@ def deserialize(stream_or_string, **options):
     :param options: options given to lower configparser module.
     '''
 
-    cp = configparser.SafeConfigParser(**options)
+    if six.PY3:
+        cp = configparser.ConfigParser(**options)
+    else:
+        cp = configparser.SafeConfigParser(**options)
 
     try:
-        if not isinstance(stream_or_string, (bytes, string_types)):
-            cp.readfp(stream_or_string)
+        if not isinstance(stream_or_string, (bytes, six.string_types)):
+            if six.PY3:
+                cp.read_file(stream_or_string)
+            else:
+                cp.readfp(stream_or_string)
         else:
-            # python2's ConfigParser cannot parse a config from a string
-            cp.readfp(StringIO.StringIO(stream_or_string))
+            if six.PY3:
+                cp.read_file(six.moves.StringIO(stream_or_string))
+            else:
+                # python2's ConfigParser cannot parse a config from a string
+                cp.readfp(six.moves.StringIO(stream_or_string))
         data = {}
         for section_name in cp.sections():
             section = {}
@@ -60,13 +69,16 @@ def serialize(obj, **options):
         if not isinstance(obj, dict):
             raise TypeError("configparser can only serialize dictionaries, not {0}".format(type(obj)))
         fp = options.pop('fp', None)
-        cp = configparser.SafeConfigParser(**options)
+        if six.PY3:
+            cp = configparser.ConfigParser(**options)
+        else:
+            cp = configparser.SafeConfigParser(**options)
         _read_dict(cp, obj)
 
         if fp:
             return cp.write(fp)
         else:
-            s = StringIO.StringIO()
+            s = six.moves.StringIO()
             cp.write(s)
             return s.getvalue()
     except Exception as error:
@@ -78,10 +90,10 @@ def _read_dict(configparser, dictionary):
     Cribbed from python3's ConfigParser.read_dict function.
     '''
     for section, keys in dictionary.items():
-        section = str(section)
+        section = six.text_type(section)
         configparser.add_section(section)
         for key, value in keys.items():
-            key = configparser.optionxform(str(key))
+            key = configparser.optionxform(six.text_type(key))
             if value is not None:
-                value = str(value)
+                value = six.text_type(value)
             configparser.set(section, key, value)

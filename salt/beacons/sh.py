@@ -4,16 +4,17 @@ Watch the shell commands being executed actively. This beacon requires strace.
 '''
 
 # Import python libs
-from __future__ import absolute_import
+from __future__ import absolute_import, unicode_literals
+
+import logging
 import time
 
 # Import salt libs
-import salt.utils
+import salt.utils.path
 import salt.utils.vt
 
 __virtualname__ = 'sh'
 
-import logging
 log = logging.getLogger(__name__)
 
 
@@ -21,7 +22,7 @@ def __virtual__():
     '''
     Only load if strace is installed
     '''
-    return __virtualname__ if salt.utils.which('strace') else False
+    return __virtualname__ if salt.utils.path.which('strace') else False
 
 
 def _get_shells():
@@ -45,8 +46,8 @@ def validate(config):
     Validate the beacon configuration
     '''
     # Configuration for sh beacon should be a list of dicts
-    if not isinstance(config, dict):
-        return False, ('Configuration for sh beacon must be a dictionary.')
+    if not isinstance(config, list):
+        return False, ('Configuration for sh beacon must be a list.')
     return True, 'Valid beacon configuration'
 
 
@@ -57,7 +58,7 @@ def beacon(config):
     .. code-block:: yaml
 
         beacons:
-          sh: {}
+          sh: []
     '''
     ret = []
     pkey = 'sh.vt'

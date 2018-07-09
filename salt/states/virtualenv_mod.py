@@ -4,19 +4,22 @@ Setup of Python virtualenv sandboxes.
 
 .. versionadded:: 0.17.0
 '''
-from __future__ import absolute_import
 
-# Import python libs
+# Import Python libs
+from __future__ import absolute_import, print_function, unicode_literals
 import logging
 import os
 
-# Import salt libs
+# Import Salt libs
 import salt.version
-import salt.utils
+import salt.utils.functools
+import salt.utils.platform
+import salt.utils.versions
+from salt.exceptions import CommandExecutionError, CommandNotFoundError
 
-from salt.exceptions import CommandNotFoundError
-
+# Import 3rd-party libs
 from salt.ext import six
+
 log = logging.getLogger(__name__)
 
 # Define the module's virtual name
@@ -54,12 +57,19 @@ def managed(name,
             env_vars=None,
             no_use_wheel=False,
             pip_upgrade=False,
-            pip_pkgs=None):
+            pip_pkgs=None,
+            pip_no_cache_dir=False,
+            pip_cache_dir=None,
+            process_dependency_links=False):
     '''
     Create a virtualenv and optionally manage it with pip
 
     name
         Path to the virtualenv.
+
+    venv_bin: virtualenv
+        The name (and optionally path) of the virtualenv command. This can also
+        be set globally in the minion config file as ``virtualenv.venv_bin``.
 
     requirements: None
         Path to a pip requirements file. If the path begins with ``salt://``
@@ -67,6 +77,9 @@ def managed(name,
 
     use_wheel: False
         Prefer wheel archives (requires pip >= 1.4).
+
+    python : None
+        Python executable used to build the virtualenv
 
     user: None
         The user under which to run virtualenv and pip.
@@ -104,6 +117,11 @@ def managed(name,
         As an alternative to `requirements`, pass a list of pip packages that
         should be installed.
 
+    process_dependency_links: False
+        Run pip install with the --process_dependency_links flag.
+
+        .. versionadded:: 2017.7.0
+
     Also accepts any kwargs that the virtualenv module will. However, some
     kwargs, such as the ``pip`` option, require ``- distribute: True``.
 
@@ -113,6 +131,8 @@ def managed(name,
           virtualenv.managed:
             - system_site_packages: False
             - requirements: salt://REQUIREMENTS.txt
+            - env_vars:
+                PATH_VAR: '/usr/local/bin/'
     '''
     ret = {'name': name, 'result': True, 'comment': '', 'changes': {}}
 
@@ -121,7 +141,7 @@ def managed(name,
         ret['comment'] = 'Virtualenv was not detected on this system'
         return ret
 
-    if salt.utils.is_windows():
+    if salt.utils.platform.is_windows():
         venv_py = os.path.join(name, 'Scripts', 'python.exe')
     else:
         venv_py = os.path.join(name, 'bin', 'python')
@@ -136,7 +156,7 @@ def managed(name,
                 requirements, __env__
             )
         # Check if the master version has changed.
-        if __salt__['cp.hash_file'](requirements, __env__) != \
+        if cached_requirements and __salt__['cp.hash_file'](requirements, __env__) != \
                 __salt__['cp.hash_file'](cached_requirements, __env__):
             cached_requirements = __salt__['cp.cache_file'](
                 requirements, __env__
@@ -144,7 +164,7 @@ def managed(name,
         if not cached_requirements:
             ret.update({
                 'result': False,
-                'comment': 'pip requirements file {0!r} not found'.format(
+                'comment': 'pip requirements file \'{0}\' not found'.format(
                     requirements
                 )
             })
@@ -174,7 +194,7 @@ def managed(name,
 
     if not venv_exists or (venv_exists and clear):
         try:
-            _ret = __salt__['virtualenv.create'](
+            venv_ret = __salt__['virtualenv.create'](
                 name,
                 venv_bin=venv_bin,
                 system_site_packages=system_site_packages,
@@ -189,12 +209,12 @@ def managed(name,
             )
         except CommandNotFoundError as err:
             ret['result'] = False
-            ret['comment'] = 'Failed to create virtualenv: {0}'.formar(err)
+            ret['comment'] = 'Failed to create virtualenv: {0}'.format(err)
             return ret
 
-        if _ret['retcode'] != 0:
+        if venv_ret['retcode'] != 0:
             ret['result'] = False
-            ret['comment'] = _ret['stdout'] + _ret['stderr']
+            ret['comment'] = venv_ret['stdout'] + venv_ret['stderr']
             return ret
 
         ret['result'] = True
@@ -212,7 +232,7 @@ def managed(name,
     if use_wheel:
         min_version = '1.4'
         cur_version = __salt__['pip.version'](bin_env=name)
-        if not salt.utils.compare_versions(ver1=cur_version, oper='>=',
+        if not salt.utils.versions.compare(ver1=cur_version, oper='>=',
                                            ver2=min_version):
             ret['result'] = False
             ret['comment'] = ('The \'use_wheel\' option is only supported in '
@@ -223,7 +243,7 @@ def managed(name,
     if no_use_wheel:
         min_version = '1.4'
         cur_version = __salt__['pip.version'](bin_env=name)
-        if not salt.utils.compare_versions(ver1=cur_version, oper='>=',
+        if not salt.utils.versions.compare(ver1=cur_version, oper='>=',
                                            ver2=min_version):
             ret['result'] = False
             ret['comment'] = ('The \'no_use_wheel\' option is only supported '
@@ -234,7 +254,12 @@ def managed(name,
 
     # Populate the venv via a requirements file
     if requirements or pip_pkgs:
-        before = set(__salt__['pip.freeze'](bin_env=name, user=user, use_vt=use_vt))
+        try:
+            before = set(__salt__['pip.freeze'](bin_env=name, user=user, use_vt=use_vt))
+        except CommandExecutionError as exc:
+            ret['result'] = False
+            ret['comment'] = exc.strerror
+            return ret
 
         if requirements:
 
@@ -250,9 +275,10 @@ def managed(name,
             if req_canary != os.path.abspath(req_canary):
                 cwd = os.path.dirname(os.path.abspath(req_canary))
 
-        _ret = __salt__['pip.install'](
+        pip_ret = __salt__['pip.install'](
             pkgs=pip_pkgs,
             requirements=requirements,
+            process_dependency_links=process_dependency_links,
             bin_env=name,
             use_wheel=use_wheel,
             no_use_wheel=no_use_wheel,
@@ -270,13 +296,15 @@ def managed(name,
             no_deps=no_deps,
             proxy=proxy,
             use_vt=use_vt,
-            env_vars=env_vars
+            env_vars=env_vars,
+            no_cache_dir=pip_no_cache_dir,
+            cache_dir=pip_cache_dir
         )
-        ret['result'] &= _ret['retcode'] == 0
-        if _ret['retcode'] > 0:
+        ret['result'] &= pip_ret['retcode'] == 0
+        if pip_ret['retcode'] > 0:
             ret['comment'] = '{0}\n{1}\n{2}'.format(ret['comment'],
-                                                    _ret['stdout'],
-                                                    _ret['stderr'])
+                                                    pip_ret['stdout'],
+                                                    pip_ret['stderr'])
 
         after = set(__salt__['pip.freeze'](bin_env=name))
 
@@ -289,4 +317,4 @@ def managed(name,
                 'old': old if old else ''}
     return ret
 
-manage = salt.utils.alias_function(managed, 'manage')
+manage = salt.utils.functools.alias_function(managed, 'manage')

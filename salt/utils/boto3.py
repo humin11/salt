@@ -35,17 +35,18 @@ Example Usage:
 '''
 
 # Import Python libs
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 import hashlib
 import logging
 import sys
-from distutils.version import LooseVersion as _LooseVersion  # pylint: disable=import-error,no-name-in-module
 from functools import partial
 
 # Import salt libs
 from salt.ext.six.moves import range  # pylint: disable=import-error,redefined-builtin
 from salt.exceptions import SaltInvocationError
 from salt.ext import six
+import salt.utils.stringutils
+import salt.utils.versions
 
 # Import third party libs
 # pylint: disable=import-error
@@ -55,6 +56,7 @@ try:
     import boto3
     import boto.exception
     import boto3.session
+    import botocore  # pylint: disable=W0611
 
     # pylint: enable=import-error
     logging.getLogger('boto3').setLevel(logging.CRITICAL)
@@ -72,17 +74,7 @@ def __virtual__():
     Only load if boto libraries exist and if boto libraries are greater than
     a given version.
     '''
-    # TODO: Determine minimal version we want to support. VPC requires > 2.8.0.
-    required_boto_version = '2.0.0'
-    required_boto3_version = '1.2.1'
-    if not HAS_BOTO:
-        return False
-    elif _LooseVersion(boto.__version__) < _LooseVersion(required_boto_version):
-        return False
-    elif _LooseVersion(boto3.__version__) < _LooseVersion(required_boto3_version):
-        return False
-    else:
-        return True
+    return salt.utils.versions.check_boto_reqs()
 
 
 def _option(value):
@@ -113,7 +105,7 @@ def _get_profile(service, region, key, keyid, profile):
 
     if not region:
         region = 'us-east-1'
-        log.info('Assuming default region {0}'.format(region))
+        log.info('Assuming default region %s', region)
 
     if not key and _option(service + '.key'):
         key = _option(service + '.key')
@@ -122,7 +114,10 @@ def _get_profile(service, region, key, keyid, profile):
 
     label = 'boto_{0}:'.format(service)
     if keyid:
-        cxkey = label + hashlib.md5(region + keyid + key).hexdigest()
+        hash_string = region + keyid + key
+        if six.PY3:
+            hash_string = salt.utils.stringutils.to_bytes(hash_string)
+        cxkey = label + hashlib.md5(hash_string).hexdigest()
     else:
         cxkey = label + region
 
@@ -171,7 +166,7 @@ def cache_id_func(service):
     '''
     Returns a partial `cache_id` function for the provided service.
 
-    ... code-block:: python
+    .. code-block:: python
 
         cache_id = __utils__['boto.cache_id_func']('ec2')
         cache_id('myinstance', 'i-a1b2c3')
@@ -194,7 +189,7 @@ def get_connection(service, module=None, region=None, key=None, keyid=None,
 
     cxkey, region, key, keyid = _get_profile(service, region, key,
                                              keyid, profile)
-    cxkey = cxkey + ':conn'
+    cxkey = cxkey + ':conn3'
 
     if cxkey in __context__:
         return __context__[cxkey]
@@ -222,7 +217,7 @@ def get_connection_func(service, module=None):
     '''
     Returns a partial `get_connection` function for the provided service.
 
-    ... code-block:: python
+    .. code-block:: python
 
         get_conn = __utils__['boto.get_connection_func']('ec2')
         conn = get_conn()
@@ -243,23 +238,27 @@ def get_error(e):
     # The returns from boto modules vary greatly between modules. We need to
     # assume that none of the data we're looking for exists.
     aws = {}
-    if hasattr(e, 'status'):
-        aws['status'] = e.status
-    if hasattr(e, 'reason'):
-        aws['reason'] = e.reason
-    if hasattr(e, 'message') and e.message != '':
-        aws['message'] = e.message
-    if hasattr(e, 'error_code') and e.error_code is not None:
-        aws['code'] = e.error_code
 
-    if 'message' in aws and 'reason' in aws:
-        message = '{0}: {1}'.format(aws['reason'], aws['message'])
-    elif 'message' in aws:
-        message = aws['message']
-    elif 'reason' in aws:
-        message = aws['reason']
-    else:
-        message = ''
+    message = ''
+    if six.PY2:
+        if hasattr(e, 'status'):
+            aws['status'] = e.status
+        if hasattr(e, 'reason'):
+            aws['reason'] = e.reason
+        if six.text_type(e) != '':
+            aws['message'] = six.text_type(e)
+        if hasattr(e, 'error_code') and e.error_code is not None:
+            aws['code'] = e.error_code
+
+        if 'message' in aws and 'reason' in aws:
+            message = '{0}: {1}'.format(aws['reason'], aws['message'])
+        elif 'message' in aws:
+            message = aws['message']
+        elif 'reason' in aws:
+            message = aws['reason']
+    elif six.PY3:
+        message = e.args[0]
+
     r = {'message': message}
     if aws:
         r['aws'] = aws
@@ -293,7 +292,7 @@ def assign_funcs(modname, service, module=None,
     setattr(mod, get_conn_funcname, get_connection_func(service, module=module))
     setattr(mod, cache_id_funcname, cache_id_func(service))
 
-    # TODO: Remove this and import salt.utils.exactly_one into boto_* modules instead
+    # TODO: Remove this and import salt.utils.data.exactly_one into boto_* modules instead
     # Leaving this way for now so boto modules can be back ported
     if exactly_one_funcname is not None:
         setattr(mod, exactly_one_funcname, exactly_one)
@@ -314,21 +313,11 @@ def paged_call(function, *args, **kwargs):
         kwargs[marker_arg] = marker
 
 
-def get_role_arn(name, region=None, key=None, keyid=None, profile=None):
-    if name.startswith('arn:aws:iam:'):
-        return name
-
-    account_id = __salt__['boto_iam.get_account_id'](
-        region=region, key=key, keyid=keyid, profile=profile
-    )
-    return 'arn:aws:iam::{0}:role/{1}'.format(account_id, name)
-
-
-def _ordered(obj):
+def ordered(obj):
     if isinstance(obj, (list, tuple)):
-        return sorted(_ordered(x) for x in obj)
+        return sorted(ordered(x) for x in obj)
     elif isinstance(obj, dict):
-        return dict((six.text_type(k) if isinstance(k, six.string_types) else k, _ordered(v)) for k, v in obj.items())
+        return dict((six.text_type(k) if isinstance(k, six.string_types) else k, ordered(v)) for k, v in obj.items())
     elif isinstance(obj, six.string_types):
         return six.text_type(obj)
     return obj
@@ -337,4 +326,4 @@ def _ordered(obj):
 def json_objs_equal(left, right):
     """ Compare two parsed JSON objects, given non-ordering in JSON objects
     """
-    return _ordered(left) == _ordered(right)
+    return ordered(left) == ordered(right)

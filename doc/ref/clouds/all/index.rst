@@ -1,8 +1,8 @@
 .. _all-salt.clouds:
 
-===============================
-Full list of Salt Cloud modules
-===============================
+=============
+cloud modules
+=============
 
 .. currentmodule:: salt.cloud.clouds
 
@@ -11,8 +11,9 @@ Full list of Salt Cloud modules
     :template: autosummary.rst.tmpl
 
     aliyun
+    azurearm
     cloudstack
-    digital_ocean
+    digitalocean
     dimensiondata
     ec2
     gce
@@ -25,14 +26,16 @@ Full list of Salt Cloud modules
     opennebula
     openstack
     parallels
+    profitbricks
     proxmox
     pyrax
     qingcloud
-    rackspace
     saltify
     scaleway
     softlayer
     softlayer_hw
+    vagrant
     virtualbox
     vmware
-    vsphere
+    vultrpy
+    xen

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 '''
-Homebrew for Mac OS X
+Homebrew for macOS
 
 .. important::
     If you feel that Salt should be using this module to manage packages on a
@@ -8,17 +8,24 @@ Homebrew for Mac OS X
     *'pkg.install' is not available*), see :ref:`here
     <module-provider-override>`.
 '''
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 
 # Import python libs
 import copy
-import json
+import functools
 import logging
 
 # Import salt libs
-import salt.utils
+import salt.utils.data
+import salt.utils.functools
+import salt.utils.json
+import salt.utils.path
+import salt.utils.pkg
+import salt.utils.versions
 from salt.exceptions import CommandExecutionError, MinionError
-import salt.ext.six as six
+
+# Import third party libs
+from salt.ext import six
 from salt.ext.six.moves import zip
 
 log = logging.getLogger(__name__)
@@ -32,7 +39,7 @@ def __virtual__():
     Confine this module to Mac OS with Homebrew.
     '''
 
-    if salt.utils.which('brew') and __grains__['os'] == 'MacOS':
+    if salt.utils.path.which('brew') and __grains__['os'] == 'MacOS':
         return __virtualname__
     return (False, 'The brew module could not be loaded: brew not found or grain os != MacOS')
 
@@ -54,8 +61,10 @@ def _tap(tap, runas=None):
         return True
 
     cmd = 'brew tap {0}'.format(tap)
-    if _call_brew(cmd)['retcode']:
-        log.error('Failed to tap "{0}"'.format(tap))
+    try:
+        _call_brew(cmd)
+    except CommandExecutionError:
+        log.error('Failed to tap "%s"', tap)
         return False
 
     return True
@@ -70,17 +79,20 @@ def _homebrew_bin():
     return ret
 
 
-def _call_brew(cmd, redirect_stderr=False):
+def _call_brew(cmd, failhard=True):
     '''
     Calls the brew command with the user account of brew
     '''
     user = __salt__['file.get_user'](_homebrew_bin())
     runas = user if user != __opts__['user'] else None
-    return __salt__['cmd.run_all'](cmd,
-                                   runas=runas,
-                                   output_loglevel='trace',
-                                   python_shell=False,
-                                   redirect_stderr=redirect_stderr)
+    result = __salt__['cmd.run_all'](cmd,
+                                     runas=runas,
+                                     output_loglevel='trace',
+                                     python_shell=False)
+    if failhard and result['retcode'] != 0:
+        raise CommandExecutionError('Brew command failed',
+                                    info={'result': result})
+    return result
 
 
 def list_pkgs(versions_as_list=False, **kwargs):
@@ -95,9 +107,9 @@ def list_pkgs(versions_as_list=False, **kwargs):
 
         salt '*' pkg.list_pkgs
     '''
-    versions_as_list = salt.utils.is_true(versions_as_list)
+    versions_as_list = salt.utils.data.is_true(versions_as_list)
     # not yet implemented or not applicable
-    if any([salt.utils.is_true(kwargs.get(x))
+    if any([salt.utils.data.is_true(kwargs.get(x))
             for x in ('removed', 'purge_desired')]):
         return {}
 
@@ -109,18 +121,42 @@ def list_pkgs(versions_as_list=False, **kwargs):
             __salt__['pkg_resource.stringify'](ret)
             return ret
 
-    cmd = 'brew list --versions'
     ret = {}
-    out = _call_brew(cmd)['stdout']
-    for line in out.splitlines():
-        try:
-            name_and_versions = line.split(' ')
-            name = name_and_versions[0]
-            installed_versions = name_and_versions[1:]
-            newest_version = sorted(installed_versions, cmp=salt.utils.version_cmp).pop()
-        except ValueError:
-            continue
-        __salt__['pkg_resource.add_pkg'](ret, name, newest_version)
+    cmd = 'brew info --json=v1 --installed'
+    package_info = salt.utils.json.loads(_call_brew(cmd)['stdout'])
+
+    for package in package_info:
+        # Brew allows multiple versions of the same package to be installed.
+        # Salt allows for this, so it must be accounted for.
+        versions = [v['version'] for v in package['installed']]
+        # Brew allows for aliasing of packages, all of which will be
+        # installable from a Salt call, so all names must be accounted for.
+        names = package['aliases'] + [package['name'], package['full_name']]
+        # Create a list of tuples containing all possible combinations of
+        # names and versions, because all are valid.
+        combinations = [(n, v) for n in names for v in versions]
+
+        for name, version in combinations:
+            __salt__['pkg_resource.add_pkg'](ret, name, version)
+
+    # Grab packages from brew cask, if available.
+    # Brew Cask doesn't provide a JSON interface, must be parsed the old way.
+    try:
+        cask_cmd = 'brew cask list --versions'
+        out = _call_brew(cask_cmd)['stdout']
+
+        for line in out.splitlines():
+            try:
+                name_and_versions = line.split(' ')
+                name = '/'.join(('caskroom/cask', name_and_versions[0]))
+                installed_versions = name_and_versions[1:]
+                key_func = functools.cmp_to_key(salt.utils.versions.version_cmp)
+                newest_version = sorted(installed_versions, key=key_func).pop()
+            except ValueError:
+                continue
+            __salt__['pkg_resource.add_pkg'](ret, name, newest_version)
+    except CommandExecutionError:
+        pass
 
     __salt__['pkg_resource.sort_pkglist'](ret)
     __context__['pkg.list_pkgs'] = copy.deepcopy(ret)
@@ -160,8 +196,7 @@ def latest_version(*names, **kwargs):
         salt '*' pkg.latest_version <package name>
         salt '*' pkg.latest_version <package1> <package2> <package3>
     '''
-    refresh = salt.utils.is_true(kwargs.pop('refresh', True))
-
+    refresh = salt.utils.data.is_true(kwargs.pop('refresh', True))
     if refresh:
         refresh_db()
 
@@ -177,7 +212,7 @@ def latest_version(*names, **kwargs):
         return versions_dict
 
 # available_version is being deprecated
-available_version = salt.utils.alias_function(latest_version, 'available_version')
+available_version = salt.utils.functools.alias_function(latest_version, 'available_version')
 
 
 def remove(name=None, pkgs=None, **kwargs):
@@ -228,7 +263,7 @@ def remove(name=None, pkgs=None, **kwargs):
 
     __context__.pop('pkg.list_pkgs', None)
     new = list_pkgs()
-    ret = salt.utils.compare_dicts(old, new)
+    ret = salt.utils.data.compare_dicts(old, new)
 
     if errors:
         raise CommandExecutionError(
@@ -249,6 +284,8 @@ def refresh_db():
 
         salt '*' pkg.refresh_db
     '''
+    # Remove rtag file to keep multiple refreshes from happening in pkg states
+    salt.utils.pkg.clear_rtag(__opts__)
     cmd = 'brew update'
     if _call_brew(cmd)['retcode']:
         log.error('Failed to update')
@@ -275,9 +312,10 @@ def _info(*pkgs):
     cmd = 'brew info --json=v1 {0}'.format(' '.join(pkgs))
     brew_result = _call_brew(cmd)
     if brew_result['retcode']:
-        log.error('Failed to get info about packages: {0}'.format(' '.join(pkgs)))
+        log.error('Failed to get info about packages: %s',
+                  ' '.join(pkgs))
         return {}
-    output = json.loads(brew_result['stdout'])
+    output = salt.utils.json.loads(brew_result['stdout'])
     return dict(zip(pkgs, output))
 
 
@@ -379,7 +417,7 @@ def install(name=None, pkgs=None, taps=None, options=None, **kwargs):
 
     __context__.pop('pkg.list_pkgs', None)
     new = list_pkgs()
-    ret = salt.utils.compare_dicts(old, new)
+    ret = salt.utils.data.compare_dicts(old, new)
 
     if errors:
         raise CommandExecutionError(
@@ -390,7 +428,7 @@ def install(name=None, pkgs=None, taps=None, options=None, **kwargs):
     return ret
 
 
-def list_upgrades(refresh=True):
+def list_upgrades(refresh=True, **kwargs):  # pylint: disable=W0613
     '''
     Check whether or not an upgrade is available for all packages
 
@@ -403,20 +441,20 @@ def list_upgrades(refresh=True):
     if refresh:
         refresh_db()
 
-    cmd = 'brew outdated'
-    call = _call_brew(cmd)
-    if call['retcode'] != 0:
-        comment = ''
-        if 'stderr' in call:
-            comment += call['stderr']
-        if 'stdout' in call:
-            comment += call['stdout']
-        raise CommandExecutionError(
-            '{0}'.format(comment)
-        )
-    else:
-        out = call['stdout']
-    return out.splitlines()
+    res = _call_brew(['brew', 'outdated', '--json=v1'])
+    ret = {}
+
+    try:
+        data = salt.utils.json.loads(res['stdout'])
+    except ValueError as err:
+        msg = 'unable to interpret output from "brew outdated": {0}'.format(err)
+        log.error(msg)
+        raise CommandExecutionError(msg)
+
+    for pkg in data:
+        # current means latest available to brew
+        ret[pkg['name']] = pkg['current_version']
+    return ret
 
 
 def upgrade_available(pkg):
@@ -439,10 +477,13 @@ def upgrade(refresh=True):
     refresh
         Fetch the newest version of Homebrew and all formulae from GitHub before installing.
 
-    Return a dict containing the new package names and versions::
+    Returns a dictionary containing the changes:
 
-        {'<package>': {'old': '<old-version>',
-                       'new': '<new-version>'}}
+    .. code-block:: python
+
+        {'<package>':  {'old': '<old-version>',
+                        'new': '<new-version>'}}
+
 
     CLI Example:
 
@@ -457,19 +498,37 @@ def upgrade(refresh=True):
 
     old = list_pkgs()
 
-    if salt.utils.is_true(refresh):
+    if salt.utils.data.is_true(refresh):
         refresh_db()
 
-    cmd = 'brew upgrade'
-    call = _call_brew(cmd, redirect_stderr=True)
-
-    if call['retcode'] != 0:
-        ret['result'] = False
-        if call['stdout']:
-            ret['comment'] = call['stdout']
-
+    result = _call_brew('brew upgrade', failhard=False)
     __context__.pop('pkg.list_pkgs', None)
     new = list_pkgs()
-    ret['changes'] = salt.utils.compare_dicts(old, new)
+    ret = salt.utils.data.compare_dicts(old, new)
+
+    if result['retcode'] != 0:
+        raise CommandExecutionError(
+            'Problem encountered upgrading packages',
+            info={'changes': ret, 'result': result}
+        )
 
     return ret
+
+
+def info_installed(*names):
+    '''
+    Return the information of the named package(s) installed on the system.
+
+    .. versionadded:: 2016.3.1
+
+    names
+        The names of the packages for which to return information.
+
+    CLI example:
+
+    .. code-block:: bash
+
+        salt '*' pkg.info_installed <package1>
+        salt '*' pkg.info_installed <package1> <package2> <package3> ...
+    '''
+    return _info(*names)

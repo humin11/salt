@@ -11,17 +11,6 @@ This module is a concrete implementation of the sql_base ext_pillar for MySQL.
 :depends: python-mysqldb
 :platform: all
 
-Legacy compatibility
-=====================================
-
-This module has an extra addition for backward compatibility.
-
-If there's a keyword arg of mysql_query, that'll go first before other args.
-This legacy compatibility translates to depth 1.
-
-We do this so that it's backward compatible with older configs.
-This is deprecated and slated to be removed in Carbon.
-
 Configuring the mysql ext_pillar
 =====================================
 
@@ -41,6 +30,10 @@ Complete example
       user: 'salt'
       pass: 'super_secret_password'
       db: 'salt_db'
+      port: 3306
+      ssl:
+        cert: /etc/mysql/client-cert.pem
+        key: /etc/mysql/client-key.pem
 
     ext_pillar:
       - mysql:
@@ -52,7 +45,7 @@ Complete example
             as_list: True
             with_lists: [1,3]
 '''
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 
 # Import python libs
 from contextlib import contextmanager
@@ -94,12 +87,13 @@ class MySQLExtPillar(SqlBaseExtPillar):
                     'user': 'salt',
                     'pass': 'salt',
                     'db': 'salt',
-                    'port': 3306}
+                    'port': 3306,
+                    'ssl': {}}
         _options = {}
         _opts = __opts__.get('mysql', {})
         for attr in defaults:
             if attr not in _opts:
-                log.debug('Using default for MySQL {0}'.format(attr))
+                log.debug('Using default for MySQL %s', attr)
                 _options[attr] = defaults[attr]
                 continue
             _options[attr] = _opts[attr]
@@ -114,12 +108,13 @@ class MySQLExtPillar(SqlBaseExtPillar):
         conn = MySQLdb.connect(host=_options['host'],
                                user=_options['user'],
                                passwd=_options['pass'],
-                               db=_options['db'], port=_options['port'])
+                               db=_options['db'], port=_options['port'],
+                               ssl=_options['ssl'])
         cursor = conn.cursor()
         try:
             yield cursor
         except MySQLdb.DatabaseError as err:
-            log.exception('Error in ext_pillar MySQL: {0}'.format(err.args))
+            log.exception('Error in ext_pillar MySQL: %s', err.args)
         finally:
             conn.close()
 

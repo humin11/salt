@@ -1,17 +1,17 @@
 # -*- coding: utf-8 -*-
 '''
 Management of the GPG keychains
-==============================
+===============================
 
 .. versionadded:: 2016.3.0
 
 '''
-
-
-from __future__ import absolute_import
-from salt.ext.six import string_types
-
+from __future__ import absolute_import, print_function, unicode_literals
 import logging
+
+# Import 3rd-party libs
+from salt.ext import six
+
 log = logging.getLogger(__name__)
 
 _VALID_TRUST_VALUES = ['expired',
@@ -81,7 +81,7 @@ def present(name,
     if not keys:
         keys = name
 
-    if isinstance(keys, string_types):
+    if isinstance(keys, six.string_types):
         keys = [keys]
 
     for key in keys:
@@ -132,7 +132,7 @@ def present(name,
                 else:
                     ret['comment'].append('Invalid trust level {0}'.format(trust))
 
-        ret['comment'] = '\n'.join(ret['comment'])
+    ret['comment'] = '\n'.join(ret['comment'])
     return ret
 
 
@@ -172,7 +172,7 @@ def absent(name,
     if not keys:
         keys = name
 
-    if isinstance(keys, string_types):
+    if isinstance(keys, six.string_types):
         keys = [keys]
 
     for key in keys:
@@ -188,5 +188,5 @@ def absent(name,
                 ret['comment'].append('Deleting {0} from GPG keychain'.format(name))
         else:
             ret['comment'].append('{0} not found in GPG keychain'.format(name))
-        ret['comment'] = '\n'.join(ret['comment'])
+    ret['comment'] = '\n'.join(ret['comment'])
     return ret

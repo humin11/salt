@@ -1,8 +1,8 @@
 .. _all-salt.states:
 
-==================================
-Full list of builtin state modules
-==================================
+=============
+state modules
+=============
 
 .. currentmodule:: salt.states
 
@@ -26,11 +26,15 @@ Full list of builtin state modules
     beacon
     bigip
     blockdev
+    boto3_elasticache
+    boto3_route53
     boto_apigateway
     boto_asg
     boto_cfn
+    boto_cloudfront
     boto_cloudtrail
     boto_cloudwatch_alarm
+    boto_cloudwatch_event
     boto_cognitoidentity
     boto_datapipeline
     boto_dynamodb
@@ -38,9 +42,11 @@ Full list of builtin state modules
     boto_elasticache
     boto_elasticsearch_domain
     boto_elb
+    boto_elbv2
     boto_iam
     boto_iam_role
     boto_iot
+    boto_kinesis
     boto_kms
     boto_lambda
     boto_lc
@@ -53,26 +59,35 @@ Full list of builtin state modules
     boto_vpc
     bower
     cabal
+    ceph
     chef
     chocolatey
     chronos_job
+    cimc
+    cisconso
     cloud
     cmd
     composer
     cron
+    csf
     cyg
     ddns
     debconfmod
     dellchassis
     disk
-    dockerio
-    dockerng
+    docker
+    docker_container
+    docker_image
+    docker_network
+    docker_volume
     drac
+    elasticsearch
     elasticsearch_index
     elasticsearch_index_template
     environ
     eselect
     etcd_mod
+    ethtool
     esxi
     event
     file
@@ -86,20 +101,34 @@ Full list of builtin state modules
     gnomedesktop
     gpg
     grafana
+    grafana4_dashboard
+    grafana4_datasource
+    grafana4_org
+    grafana4_user
     grafana_dashboard
     grafana_datasource
     grains
     group
+    heat
     hg
     hipchat
     host
     htpasswd
     http
+    icinga2
     ifttt
     incron
+    influxdb08_database
+    influxdb08_user
+    influxdb_continuous_query
     influxdb_database
+    influxdb_retention_policy
     influxdb_user
     infoblox
+    infoblox_a
+    infoblox_cname
+    infoblox_host_record
+    infoblox_range
     ini_manage
     ipmi
     ipset
@@ -109,13 +138,21 @@ Full list of builtin state modules
     junos
     k8s
     kapacitor
+    kernelpkg
     keyboard
     keystone
     kmod
+    kubernetes
     layman
     ldap
+    libcloud_dns
+    libcloud_loadbalancer
+    libcloud_storage
     linux_acl
     locale
+    logadm
+    logrotate
+    loop
     lvm
     lvs_server
     lvs_service
@@ -136,12 +173,19 @@ Full list of builtin state modules
     mongodb_user
     monit
     mount
+    msteams
     mysql_database
     mysql_grants
     mysql_query
     mysql_user
+    netacl
+    netconfig
     netntp
+    netsnmp
+    netusers
     network
+    netyang
+    nfs_export
     nftables
     npm
     ntp
@@ -149,13 +193,16 @@ Full list of builtin state modules
     openstack_config
     openvswitch_bridge
     openvswitch_port
+    opsgenie
     pagerduty
     pagerduty_escalation_policy
     pagerduty_schedule
     pagerduty_service
     pagerduty_user
+    panos
     pcs
     pecl
+    pdbedit
     pip_state
     pkg
     pkgbuild
@@ -176,6 +223,7 @@ Full list of builtin state modules
     powerpath
     probes
     process
+    proxy
     pushover
     pyenv
     pyrax_queues
@@ -185,6 +233,7 @@ Full list of builtin state modules
     rabbitmq_policy
     rabbitmq_user
     rabbitmq_vhost
+    rbac_solaris
     rbenv
     rdp
     redismod
@@ -200,6 +249,8 @@ Full list of builtin state modules
     slack
     smartos
     smtp
+    snapper
+    solrcloud
     splunk
     splunk_search
     sqlite3
@@ -207,7 +258,7 @@ Full list of builtin state modules
     ssh_known_hosts
     stateconf
     status
-    stormpath_account
+    statuspage
     supervisord
     svn
     sysctl
@@ -215,6 +266,7 @@ Full list of builtin state modules
     sysrc
     telemetry_alert
     test
+    testinframod
     timezone
     tls
     tomcat
@@ -222,6 +274,8 @@ Full list of builtin state modules
     tuned
     uptime
     user
+    vagrant
+    vault
     vbox_guest
     victorops
     virt
@@ -232,23 +286,29 @@ Full list of builtin state modules
     win_dns_client
     win_firewall
     win_iis
+    win_lgpo
     win_license
     win_network
     win_path
+    win_pki
     win_powercfg
     win_servermanager
     win_smtp_server
+    win_snmp
     win_system
     win_update
+    win_wua
     winrepo
     x509
     xmpp
     zabbix_host
     zabbix_hostgroup
+    zabbix_mediatype
     zabbix_user
     zabbix_usergroup
     zcbuildout
     zenoss
     zk_concurrency
     zfs
+    zone
     zpool

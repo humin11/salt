@@ -38,7 +38,7 @@ Set up the provider cloud configuration file at ``/etc/salt/cloud.providers`` or
 Profile Configuration
 =====================
 Linode profiles require a ``provider``, ``size``, ``image``, and ``location``. Set up an initial profile
-at ``/etc/salt/cloud.profiles`` or in the ``/etc/salt/cloud.profiles.d/`` directory:
+at ``/etc/salt/cloud.profiles`` or ``/etc/salt/cloud.profiles.d/*.conf``:
 
 .. code-block:: yaml
 
@@ -187,10 +187,6 @@ assign_private_ip
 .. versionadded:: 2016.3.0
 
 Assigns a private IP address to a Linode when set to True. Default is False.
-
-private_ip
-----------
-Deprecated in favor of `assign_private_ip`_ in Salt 2016.3.0.
 
 ssh_interface
 -------------

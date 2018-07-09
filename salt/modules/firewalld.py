@@ -6,13 +6,14 @@ Support for firewalld.
 '''
 
 # Import Python Libs
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 import logging
 import re
 
 # Import Salt Libs
 from salt.exceptions import CommandExecutionError
-import salt.utils
+import salt.utils.path
+import salt.utils.versions
 
 log = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ def __virtual__():
     '''
     Check to see if firewall-cmd exists
     '''
-    if salt.utils.which('firewall-cmd'):
+    if salt.utils.path.which('firewall-cmd'):
         return True
 
     return (False, 'The firewalld execution module cannot be loaded: the firewall-cmd binary is not in the path.')
@@ -31,7 +32,7 @@ def __firewall_cmd(cmd):
     '''
     Return the firewall-cmd location
     '''
-    firewall_cmd = '{0} {1}'.format(salt.utils.which('firewall-cmd'), cmd)
+    firewall_cmd = '{0} {1}'.format(salt.utils.path.which('firewall-cmd'), cmd)
     out = __salt__['cmd.run_all'](firewall_cmd)
 
     if out['retcode'] != 0:
@@ -66,6 +67,22 @@ def version():
         salt '*' firewalld.version
     '''
     return __firewall_cmd('--version')
+
+
+def reload_rules():
+    '''
+    Reload the firewall rules, which makes the permanent configuration the new
+    runtime configuration without losing state information.
+
+    .. versionadded:: 2016.11.0
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' firewalld.reload
+    '''
+    return __firewall_cmd('--reload')
 
 
 def default_zone():
@@ -418,6 +435,110 @@ def remove_service(service, zone=None, permanent=True):
     return __firewall_cmd(cmd)
 
 
+def add_service_port(service, port):
+    '''
+    Add a new port to the specified service.
+
+    .. versionadded:: 2016.11.0
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' firewalld.add_service_port zone 80
+    '''
+    if service not in get_services(permanent=True):
+        raise CommandExecutionError('The service does not exist.')
+
+    cmd = '--permanent --service={0} --add-port={1}'.format(service, port)
+    return __firewall_cmd(cmd)
+
+
+def remove_service_port(service, port):
+    '''
+    Remove a port from the specified service.
+
+    .. versionadded:: 2016.11.0
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' firewalld.remove_service_port zone 80
+    '''
+    if service not in get_services(permanent=True):
+        raise CommandExecutionError('The service does not exist.')
+
+    cmd = '--permanent --service={0} --remove-port={1}'.format(service, port)
+    return __firewall_cmd(cmd)
+
+
+def get_service_ports(service):
+    '''
+    List ports of a service.
+
+    .. versionadded:: 2016.11.0
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' firewalld.get_service_ports zone
+    '''
+    cmd = '--permanent --service={0} --get-ports'.format(service)
+    return __firewall_cmd(cmd).split()
+
+
+def add_service_protocol(service, protocol):
+    '''
+    Add a new protocol to the specified service.
+
+    .. versionadded:: 2016.11.0
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' firewalld.add_service_protocol zone ssh
+    '''
+    cmd = '--permanent --service={0} --add-protocol={1}'.format(service,
+                                                                protocol)
+    return __firewall_cmd(cmd)
+
+
+def remove_service_protocol(service, protocol):
+    '''
+    Remove a protocol from the specified service.
+
+    .. versionadded:: 2016.11.0
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' firewalld.remove_service_protocol zone ssh
+    '''
+    cmd = '--permanent --service={0} --remove-protocol={1}'.format(service,
+                                                                   protocol)
+    return __firewall_cmd(cmd)
+
+
+def get_service_protocols(service):
+    '''
+    List protocols of a service.
+
+    .. versionadded:: 2016.11.0
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' firewalld.get_service_protocols zone
+    '''
+    cmd = '--permanent --service={0} --get-protocols'.format(service)
+    return __firewall_cmd(cmd).split()
+
+
 def get_masquerade(zone=None, permanent=True):
     '''
     Show if masquerading is enabled on a zone.
@@ -497,7 +618,8 @@ def remove_masquerade(zone=None, permanent=True):
     return __firewall_cmd(cmd)
 
 
-def add_port(zone, port, permanent=True):
+# TODO: remove force_masquerade parameter in future release
+def add_port(zone, port, permanent=True, force_masquerade=None):
     '''
     Allow specific ports in a zone.
 
@@ -509,7 +631,19 @@ def add_port(zone, port, permanent=True):
 
         salt '*' firewalld.add_port internal 443/tcp
     '''
-    if not get_masquerade(zone):
+
+    # Previously, masquerading was always enabled here
+    # This will be deprecated in a future release
+    if force_masquerade is None:
+        force_masquerade = True
+        salt.utils.versions.warn_until(
+            'Neon',
+            'add_port function will no longer force enable masquerading '
+            'in future releases. Use add_masquerade to enable masquerading.')
+
+    # (DEPRECATED) Force enable masquerading
+    # TODO: remove in future release
+    if force_masquerade and not get_masquerade(zone):
         add_masquerade(zone)
 
     cmd = '--zone={0} --add-port={1}'.format(zone, port)
@@ -560,7 +694,8 @@ def list_ports(zone, permanent=True):
     return __firewall_cmd(cmd).split()
 
 
-def add_port_fwd(zone, src, dest, proto='tcp', dstaddr='', permanent=True):
+# TODO: remove force_masquerade parameter in future release
+def add_port_fwd(zone, src, dest, proto='tcp', dstaddr='', permanent=True, force_masquerade=None):
     '''
     Add port forwarding.
 
@@ -572,8 +707,20 @@ def add_port_fwd(zone, src, dest, proto='tcp', dstaddr='', permanent=True):
 
         salt '*' firewalld.add_port_fwd public 80 443 tcp
     '''
-    if not get_masquerade(zone):
-        add_masquerade(zone, permanent)
+
+    # Previously, masquerading was always enabled here
+    # This will be deprecated in a future release
+    if force_masquerade is None:
+        force_masquerade = True
+        salt.utils.versions.warn_until(
+            'Neon',
+            'add_port_fwd function will no longer force enable masquerading '
+            'in future releases. Use add_masquerade to enable masquerading.')
+
+    # (DEPRECATED) Force enable masquerading
+    # TODO: remove in future release
+    if force_masquerade and not get_masquerade(zone):
+        add_masquerade(zone)
 
     cmd = '--zone={0} --add-forward-port=port={1}:proto={2}:toport={3}:toaddr={4}'.format(
         zone,
@@ -874,7 +1021,7 @@ def get_rich_rules(zone, permanent=True):
     '''
     List rich rules bound to a zone
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.11.0
 
     CLI Example:
 
@@ -894,7 +1041,7 @@ def add_rich_rule(zone, rule, permanent=True):
     '''
     Add a rich rule to a zone
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.11.0
 
     CLI Example:
 
@@ -914,7 +1061,7 @@ def remove_rich_rule(zone, rule, permanent=True):
     '''
     Add a rich rule to a zone
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.11.0
 
     CLI Example:
 

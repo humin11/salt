@@ -1,23 +1,26 @@
 # -*- coding: utf-8 -*-
 '''
-The service module for Mac OS X
+The service module for macOS
 .. versionadded:: 2016.3.0
 '''
-from __future__ import absolute_import
+from __future__ import absolute_import, unicode_literals, print_function
 
 # Import python libs
 import os
 import re
 import plistlib
-from distutils.version import LooseVersion
 
 # Import salt libs
-import salt.utils
 import salt.utils.decorators as decorators
+import salt.utils.files
+import salt.utils.path
+import salt.utils.platform
+import salt.utils.stringutils
 from salt.exceptions import CommandExecutionError
+from salt.utils.versions import LooseVersion as _LooseVersion
 
 # Import 3rd party libs
-import salt.ext.six as six
+from salt.ext import six
 
 # Define the module's virtual name
 __virtualname__ = 'service'
@@ -29,23 +32,23 @@ __func_alias__ = {
 
 def __virtual__():
     '''
-    Only for Mac OS X with launchctl
+    Only for macOS with launchctl
     '''
-    if not salt.utils.is_darwin():
+    if not salt.utils.platform.is_darwin():
         return (False, 'Failed to load the mac_service module:\n'
-                       'Only available on Mac OS X systems.')
+                       'Only available on macOS systems.')
 
-    if not salt.utils.which('launchctl'):
+    if not salt.utils.path.which('launchctl'):
         return (False, 'Failed to load the mac_service module:\n'
                        'Required binary not found: "launchctl"')
 
-    if not salt.utils.which('plutil'):
+    if not salt.utils.path.which('plutil'):
         return (False, 'Failed to load the mac_service module:\n'
                        'Required binary not found: "plutil"')
 
-    if LooseVersion(__grains__['osrelease']) < LooseVersion('10.11'):
+    if _LooseVersion(__grains__['osrelease']) < _LooseVersion('10.11'):
         return (False, 'Failed to load the mac_service module:\n'
-                       'Requires OS X 10.11 or newer')
+                       'Requires macOS 10.11 or newer')
 
     return __virtualname__
 
@@ -69,11 +72,17 @@ def _available_services():
     '''
     available_services = dict()
     for launch_dir in _launchd_paths():
-        for root, dirs, files in os.walk(launch_dir):
+        for root, dirs, files in salt.utils.path.os_walk(launch_dir):
             for file_name in files:
-                file_path = os.path.join(root, file_name)
+
+                # Must be a plist file
+                if not file_name.endswith('.plist'):
+                    continue
+
                 # Follow symbolic links of files in _launchd_paths
+                file_path = os.path.join(root, file_name)
                 true_path = os.path.realpath(file_path)
+
                 # ignore broken symlinks
                 if not os.path.exists(true_path):
                     continue
@@ -81,7 +90,7 @@ def _available_services():
                 try:
                     # This assumes most of the plist files
                     # will be already in XML format
-                    with salt.utils.fopen(file_path):
+                    with salt.utils.files.fopen(file_path):
                         plist = plistlib.readPlist(true_path)
 
                 except Exception:
@@ -89,19 +98,24 @@ def _available_services():
                     # the system provided plutil program to do the conversion
                     cmd = '/usr/bin/plutil -convert xml1 -o - -- "{0}"'.format(
                         true_path)
-                    plist_xml = __salt__['cmd.run'](
-                        cmd, python_shell=False, output_loglevel='trace')
+                    plist_xml = __salt__['cmd.run'](cmd, output_loglevel='quiet')
                     if six.PY2:
                         plist = plistlib.readPlistFromString(plist_xml)
                     else:
                         plist = plistlib.readPlistFromBytes(
-                            salt.utils.to_bytes(plist_xml))
+                            salt.utils.stringutils.to_bytes(plist_xml))
 
-                available_services[plist.Label.lower()] = {
-                    'file_name': file_name,
-                    'file_path': true_path,
-                    'plist': plist,
-                }
+                try:
+                    available_services[plist.Label.lower()] = {
+                        'file_name': file_name,
+                        'file_path': true_path,
+                        'plist': plist}
+                except AttributeError:
+                    # Handle malformed plist files
+                    available_services[os.path.basename(file_name).lower()] = {
+                        'file_name': file_name,
+                        'file_path': true_path,
+                        'plist': plist}
 
     return available_services
 
@@ -134,6 +148,37 @@ def _get_service(name):
 
     # Could not find service
     raise CommandExecutionError('Service not found: {0}'.format(name))
+
+
+def _always_running_service(name):
+    '''
+    Check if the service should always be running based on the KeepAlive Key
+    in the service plist.
+
+    :param str name: Service label, file name, or full path
+
+    :return: True if the KeepAlive key is set to True, False if set to False or
+        not set in the plist at all.
+
+    :rtype: bool
+
+    .. versionadded:: Fluorine
+    '''
+
+    # get all the info from the launchctl service
+    service_info = show(name)
+
+    # get the value for the KeepAlive key in service plist
+    try:
+        keep_alive = service_info['plist']['KeepAlive']
+    except KeyError:
+        return False
+
+    # check if KeepAlive is True and not just set.
+    if keep_alive is True:
+        return True
+
+    return False
 
 
 def show(name):
@@ -297,7 +342,7 @@ def start(name, runas=None):
     Start a launchd service.  Raises an error if the service fails to start
 
     .. note::
-        To start a service in Mac OS X the service must be enabled first. Use
+        To start a service in macOS the service must be enabled first. Use
         ``service.enable`` to enable the service.
 
     :param str name: Service label, file name, or full path
@@ -326,7 +371,7 @@ def stop(name, runas=None):
     Stop a launchd service.  Raises an error if the service fails to stop
 
     .. note::
-        Though ``service.stop`` will unload a service in Mac OS X, the service
+        Though ``service.stop`` will unload a service in macOS, the service
         will start on next boot unless it is disabled. Use ``service.disable``
         to disable the service
 
@@ -389,7 +434,9 @@ def status(name, sig=None, runas=None):
 
     :param str runas: User to run launchctl commands
 
-    :return: The PID for the service if it is running, otherwise an empty string
+    :return: The PID for the service if it is running, or 'loaded' if the
+        service should not always have a PID, or otherwise an empty string
+
     :rtype: str
 
     CLI Example:
@@ -402,6 +449,12 @@ def status(name, sig=None, runas=None):
     if sig:
         return __salt__['status.pid'](sig)
 
+    # mac services are a little different than other platforms as they may be
+    # set to run on intervals and may not always active with a PID. This will
+    # return a string 'loaded' if it shouldn't always be running and is enabled.
+    if not _always_running_service(name) and enabled(name):
+        return 'loaded'
+
     output = list_(runas=runas)
 
     # Used a string here instead of a list because that's what the linux version
@@ -410,7 +463,7 @@ def status(name, sig=None, runas=None):
     for line in output.splitlines():
         if 'PID' in line:
             continue
-        if re.search(name, line):
+        if re.search(name, line.split()[-1]):
             if line.split()[0].isdigit():
                 if pids:
                     pids += '\n'

@@ -1,8 +1,8 @@
 .. _all-salt.grains:
 
-===================================
-Full list of builtin grains modules
-===================================
+==============
+grains modules
+==============
 
 .. currentmodule:: salt.grains
 
@@ -10,6 +10,7 @@ Full list of builtin grains modules
     :toctree:
     :template: autosummary.rst.tmpl
 
+    cimc
     chronos
     core
     disks
@@ -19,6 +20,9 @@ Full list of builtin grains modules
     junos
     marathon
     mdadm
+    metadata
+    napalm
     opts
+    panos
     philips_hue
     rest_sample

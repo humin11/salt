@@ -2,7 +2,7 @@
 '''
 Module for execution of ServiceNow CI (configuration items)
 
-.. versionadded:: Carbon
+.. versionadded:: 2016.11.0
 
 :depends: servicenow_rest python module
 
@@ -20,10 +20,11 @@ Module for execution of ServiceNow CI (configuration items)
           password: ''
 '''
 # Import python libs
-from __future__ import absolute_import
+from __future__ import absolute_import, unicode_literals, print_function
 import logging
 
 # Import third party libs
+from salt.ext import six
 HAS_LIBS = False
 try:
     from servicenow_rest.api import Client
@@ -109,7 +110,7 @@ def delete_record(table, sys_id):
     return response
 
 
-def non_structured_query(table, query):
+def non_structured_query(table, query=None, **kwargs):
     '''
     Run a non-structed (not a dict) query on a servicenow table.
     See http://wiki.servicenow.com/index.php?title=Encoded_Query_Strings#gsc.tab=0
@@ -118,21 +119,29 @@ def non_structured_query(table, query):
     :param table: The table name, e.g. sys_user
     :type  table: ``str``
 
-    :param query: The query to run
+    :param query: The query to run (or use keyword arguments to filter data)
     :type  query: ``str``
 
     CLI Example:
 
     .. code-block:: bash
 
-        salt myminion servicenow.non_structured_query sys_computer role=web
+        salt myminion servicenow.non_structured_query sys_computer 'role=web'
+        salt myminion servicenow.non_structured_query sys_computer role=web type=computer
     '''
     client = _get_client()
     client.table = table
     # underlying lib doesn't use six or past.basestring,
-    # does isinstance(x,str)
+    # does isinstance(x, str)
     # http://bit.ly/1VkMmpE
-    response = client.get(str(query))
+    if query is None:
+        # try and assemble a query by keyword
+        query_parts = []
+        for key, value in kwargs.items():
+            query_parts.append('{0}={1}'.format(key, value))
+        query = '^'.join(query_parts)
+    query = six.text_type(query)
+    response = client.get(query)
     return response
 
 

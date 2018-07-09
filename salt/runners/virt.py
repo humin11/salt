@@ -4,19 +4,20 @@ Control virtual machines via Salt
 '''
 
 # Import python libs
-from __future__ import absolute_import, print_function
+from __future__ import absolute_import, print_function, unicode_literals
 import os.path
 import logging
 
 # Import Salt libs
 import salt.client
-import salt.utils.virt
-import salt.utils.cloud
 import salt.key
+import salt.utils.cloud
+import salt.utils.files
+import salt.utils.stringutils
 from salt.exceptions import SaltClientError
 
 # Import 3rd-party libs
-import salt.ext.six as six
+from salt.ext import six
 
 log = logging.getLogger(__name__)
 
@@ -56,33 +57,25 @@ def _find_vm(name, data, quiet=False):
     return {}
 
 
-def query(host=None, quiet=False, hyper=None):
+def query(host=None, quiet=False):
     '''
     Query the virtual machines. When called without options all hosts
     are detected and a full query is returned. A single host can be
     passed in to specify an individual host to query.
     '''
-    if hyper is not None:
-        salt.utils.warn_until(
-            'Carbon',
-            'Please use "host" instead of "hyper". The "hyper" argument will '
-            'be removed in the Carbon release of Salt'
-        )
-        host = hyper
-
     if quiet:
         log.warning("'quiet' is deprecated. Please migrate to --quiet")
     ret = {}
     client = salt.client.get_local_client(__opts__['conf_file'])
     try:
         for info in client.cmd_iter('virtual:physical',
-                                    'virt.full_info', expr_form='grain'):
+                                    'virt.full_info', tgt_type='grain'):
             if not info:
                 continue
             if not isinstance(info, dict):
                 continue
             chunk = {}
-            id_ = next(info.iterkeys())
+            id_ = next(six.iterkeys(info))
             if host:
                 if host != id_:
                     continue
@@ -108,20 +101,12 @@ def list(host=None, quiet=False, hyper=None):  # pylint: disable=redefined-built
     A single host can be passed in to specify an individual host
     to list.
     '''
-    if hyper is not None:
-        salt.utils.warn_until(
-            'Carbon',
-            'Please use "host" instead of "hyper". The "hyper" argument will '
-            'be removed in the Carbon release of Salt'
-        )
-        host = hyper
-
     if quiet:
         log.warning("'quiet' is deprecated. Please migrate to --quiet")
     ret = {}
     client = salt.client.get_local_client(__opts__['conf_file'])
     for info in client.cmd_iter('virtual:physical',
-                                'virt.vm_info', expr_form='grain'):
+                                'virt.vm_info', tgt_type='grain'):
         if not info:
             continue
         if not isinstance(info, dict):
@@ -162,20 +147,6 @@ def next_host():
     return host
 
 
-def next_hyper():
-    '''
-    Return the host to use for the next autodeployed VM. This queries
-    the available host and executes some math the determine the most
-    "available" next host.
-    '''
-    salt.utils.warn_until(
-        'Carbon',
-        'Please use "host" instead of "hyper". The "hyper" argument will '
-        'be removed in the Carbon release of Salt'
-    )
-    return next_host()
-
-
 def host_info(host=None):
     '''
     Return information about the host connected to this master
@@ -188,24 +159,11 @@ def host_info(host=None):
     return data
 
 
-def hyper_info(hyper=None):
-    '''
-    Return information about the host connected to this master
-    '''
-    salt.utils.warn_until(
-        'Carbon',
-        'Please use "host" instead of "hyper". The "hyper" argument will '
-        'be removed in the Carbon release of Salt'
-    )
-    return host_info(hyper)
-
-
 def init(
         name,
         cpu,
         mem,
         image,
-        hyper=None,
         hypervisor='kvm',
         host=None,
         seed=True,
@@ -228,7 +186,7 @@ def init(
         The number of cpus to allocate to this new virtual machine.
 
     mem
-        The amount of memory to allocate tot his virtual machine. The number
+        The amount of memory to allocate to this virtual machine. The number
         is interpreted in megabytes.
 
     image
@@ -260,14 +218,6 @@ def init(
     saltenv
         The Salt environment to use
     '''
-    if hyper is not None:
-        salt.utils.warn_until(
-            'Carbon',
-            'Please use "host" instead of "hyper". The "hyper" argument will '
-            'be removed in the Carbon release of Salt'
-        )
-        host = hyper
-
     __jid_event__.fire_event({'message': 'Searching for hosts'}, 'progress')
     data = query(host, quiet=True)
     # Check if the name is already deployed
@@ -296,8 +246,8 @@ def init(
         __jid_event__.fire_event({'message': 'Minion will be preseeded'}, 'progress')
         priv_key, pub_key = salt.utils.cloud.gen_keys()
         accepted_key = os.path.join(__opts__['pki_dir'], 'minions', name)
-        with salt.utils.fopen(accepted_key, 'w') as fp_:
-            fp_.write(pub_key)
+        with salt.utils.files.fopen(accepted_key, 'w') as fp_:
+            fp_.write(salt.utils.stringutils.to_str(pub_key))
 
     client = salt.client.get_local_client(__opts__['conf_file'])
 
@@ -421,7 +371,7 @@ def force_off(name):
     try:
         cmd_ret = client.cmd_iter(
                 host,
-                'virt.destroy',
+                'virt.stop',
                 [name],
                 timeout=600)
     except SaltClientError as client_error:
@@ -456,7 +406,7 @@ def purge(name, delete_key=True):
         ret.update(comp)
 
     if delete_key:
-        log.debug('Deleting key {0}'.format(name))
+        log.debug('Deleting key %s', name)
         skey = salt.key.Key(__opts__)
         skey.delete_key(name)
     __jid_event__.fire_event({'message': 'Purged VM {0}'.format(name)}, 'progress')

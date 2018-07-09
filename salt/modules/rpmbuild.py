@@ -7,11 +7,11 @@ RPM Package builder system
 This system allows for all of the components to build rpms safely in chrooted
 environments. This also provides a function to generate yum repositories
 
-This module impliments the pkgbuild interface
+This module implements the pkgbuild interface
 '''
 
 # Import python libs
-from __future__ import absolute_import, print_function
+from __future__ import absolute_import, print_function, unicode_literals
 import errno
 import logging
 import os
@@ -23,8 +23,14 @@ import traceback
 import functools
 
 # Import salt libs
-import salt.utils
 from salt.exceptions import SaltInvocationError
+import salt.utils.files
+import salt.utils.path
+import salt.utils.user
+import salt.utils.vt
+
+# Import 3rd-party libs
+from salt.ext import six
 from salt.ext.six.moves.urllib.parse import urlparse as _urlparse  # pylint: disable=no-name-in-module,import-error
 
 HAS_LIBS = False
@@ -43,21 +49,23 @@ __virtualname__ = 'pkgbuild'
 
 def __virtual__():
     '''
-    Confirm this module is on a Redhat/CentOS based system, and has required utilities
+    Confirm this module is on a RPM based system, and has required utilities
     '''
-    if __grains__.get('os_family', False) == 'RedHat':
-        missing_util = False
-        utils_reqd = ['gpg', 'rpm', 'rpmbuild', 'mock', 'createrepo']
-        for named_util in utils_reqd:
-            if not salt.utils.which(named_util):
-                missing_util = True
-                break
-        if HAS_LIBS and not missing_util:
+    missing_util = False
+    utils_reqd = ['gpg', 'rpm', 'rpmbuild', 'mock', 'createrepo']
+    for named_util in utils_reqd:
+        if not salt.utils.path.which(named_util):
+            missing_util = True
+            break
+
+    if HAS_LIBS and not missing_util:
+        if __grains__.get('os_family', False) in ('RedHat', 'Suse'):
             return __virtualname__
         else:
-            return False, 'The rpmbuild module could not be loaded: requires python-gnupg, gpg, rpm, rpmbuild, mock and createrepo utilities to be installed'
+            # The module will be exposed as `rpmbuild` on non-RPM based systems
+            return 'rpmbuild'
     else:
-        return False
+        return False, 'The rpmbuild module could not be loaded: requires python-gnupg, gpg, rpm, rpmbuild, mock and createrepo utilities to be installed'
 
 
 def _create_rpmmacros():
@@ -74,9 +82,13 @@ def _create_rpmmacros():
         os.makedirs(mockdir)
 
     rpmmacros = os.path.join(home, '.rpmmacros')
-    with salt.utils.fopen(rpmmacros, 'w') as afile:
-        afile.write('%_topdir {0}\n'.format(rpmbuilddir))
+    with salt.utils.files.fopen(rpmmacros, 'w') as afile:
+        afile.write(
+            salt.utils.stringutils.to_str('%_topdir {0}\n'.format(rpmbuilddir))
+        )
         afile.write('%signature gpg\n')
+        afile.write('%_source_filedigest_algorithm 8\n')
+        afile.write('%_binary_filedigest_algorithm 8\n')
         afile.write('%_gpg_name packaging@saltstack.com\n')
 
 
@@ -121,10 +133,12 @@ def _get_distset(tgt):
     '''
     Get the distribution string for use with rpmbuild and mock
     '''
-    # Centos adds that string to rpm names, removing that to have
-    # consistent naming on Centos and Redhat
+    # Centos adds 'centos' string to rpm names, removing that to have
+    # consistent naming on Centos and Redhat, and allow for Amazon naming
     tgtattrs = tgt.split('-')
-    if tgtattrs[1] in ['5', '6', '7']:
+    if tgtattrs[0] == 'amzn':
+        distset = '--define "dist .{0}1"'.format(tgtattrs[0])
+    elif tgtattrs[1] in ['6', '7']:
         distset = '--define "dist .el{0}"'.format(tgtattrs[1])
     else:
         distset = ''
@@ -152,7 +166,7 @@ def _get_deps(deps, tree_base, saltenv='base'):
         else:
             shutil.copy(deprpm, dest)
 
-        deps_list += ' --install {0}'.format(dest)
+        deps_list += ' {0}'.format(dest)
 
     return deps_list
 
@@ -163,21 +177,30 @@ def make_src_pkg(dest_dir, spec, sources, env=None, template=None, saltenv='base
 
     CLI Example:
 
+    .. code-block:: bash
+
         salt '*' pkgbuild.make_src_pkg /var/www/html/ https://raw.githubusercontent.com/saltstack/libnacl/master/pkg/rpm/python-libnacl.spec https://pypi.python.org/packages/source/l/libnacl/libnacl-1.3.5.tar.gz
 
     This example command should build the libnacl SOURCE package and place it in
     /var/www/html/ on the minion
+
+    .. versionchanged:: 2017.7.0
+
+    .. note::
+
+        using SHA256 as digest and minimum level dist el6
+
     '''
     _create_rpmmacros()
     tree_base = _mk_tree()
     spec_path = _get_spec(tree_base, spec, template, saltenv)
-    if isinstance(sources, str):
+    if isinstance(sources, six.string_types):
         sources = sources.split(',')
     for src in sources:
         _get_src(tree_base, src, saltenv)
 
-    # make source rpms for dist el5, usable with mock on other dists
-    cmd = 'rpmbuild --define "_topdir {0}" -bs --define "_source_filedigest_algorithm md5" --define "_binary_filedigest_algorithm md5" --define "dist .el5" {1}'.format(tree_base, spec_path)
+    # make source rpms for dist el6 with SHA256, usable with mock on other dists
+    cmd = 'rpmbuild --verbose --define "_topdir {0}" -bs --define "dist .el6" {1}'.format(tree_base, spec_path)
     __salt__['cmd.run'](cmd)
     srpms = os.path.join(tree_base, 'SRPMS')
     ret = []
@@ -207,6 +230,8 @@ def build(runas,
 
     CLI Example:
 
+    .. code-block:: bash
+
         salt '*' pkgbuild.build mock epel-7-x86_64 /var/www/html https://raw.githubusercontent.com/saltstack/libnacl/master/pkg/rpm/python-libnacl.spec https://pypi.python.org/packages/source/l/libnacl/libnacl-1.3.5.tar.gz
 
     This example command should build the libnacl package for rhel 7 using user
@@ -233,10 +258,6 @@ def build(runas,
     noclean = ''
     deps_dir = tempfile.mkdtemp()
     deps_list = _get_deps(deps, deps_dir, saltenv)
-    if deps_list and not deps_list.isspace():
-        cmd = 'mock --root={0} {1}'.format(tgt, deps_list)
-        __salt__['cmd.run'](cmd, runas=runas)
-        noclean += ' --no-clean'
 
     for srpm in srpms:
         dbase = os.path.dirname(srpm)
@@ -244,6 +265,13 @@ def build(runas,
         try:
             __salt__['cmd.run']('chown {0} -R {1}'.format(runas, dbase))
             __salt__['cmd.run']('chown {0} -R {1}'.format(runas, results_dir))
+            cmd = 'mock --root={0} --resultdir={1} --init'.format(tgt, results_dir)
+            __salt__['cmd.run'](cmd, runas=runas)
+            if deps_list and not deps_list.isspace():
+                cmd = 'mock --root={0} --resultdir={1} --install {2} {3}'.format(tgt, results_dir, deps_list, noclean)
+                __salt__['cmd.run'](cmd, runas=runas)
+                noclean += ' --no-clean'
+
             cmd = 'mock --root={0} --resultdir={1} {2} {3} {4}'.format(
                 tgt,
                 results_dir,
@@ -280,7 +308,7 @@ def build(runas,
                     shutil.copy(full, log_file)
                     ret.setdefault('Log Files', []).append(log_file)
         except Exception as exc:
-            log.error('Error building from {0}: {1}'.format(srpm, exc))
+            log.error('Error building from %s: %s', srpm, exc)
         finally:
             shutil.rmtree(results_dir)
     shutil.rmtree(deps_dir)
@@ -288,87 +316,121 @@ def build(runas,
     return ret
 
 
-def make_repo(repodir, keyid=None, env=None, use_passphrase=False, gnupghome='/etc/salt/gpgkeys', runas='root'):
+def make_repo(repodir,
+              keyid=None,
+              env=None,
+              use_passphrase=False,
+              gnupghome='/etc/salt/gpgkeys',
+              runas='root',
+              timeout=15.0):
     '''
-    Given the repodir, create a yum repository out of the rpms therein
+    Make a package repository and optionally sign packages present
+
+    Given the repodir, create a ``yum`` repository out of the rpms therein
     and optionally sign it and packages present, the name is directory to
     turn into a repo. This state is best used with onchanges linked to
-    your package building states
-
-    CLI Example::
-
-        salt '*' pkgbuild.make_repo /var/www/html/
+    your package building states.
 
     repodir
-        The directory to find packages that will be in the repository
+        The directory to find packages that will be in the repository.
 
     keyid
         .. versionchanged:: 2016.3.0
 
         Optional Key ID to use in signing packages and repository.
         Utilizes Public and Private keys associated with keyid which have
-        been loaded into the minion's Pillar Data.
+        been loaded into the minion's Pillar data.
 
-        For example, contents from a pillar data file with named Public
+        For example, contents from a Pillar data file with named Public
         and Private keys as follows:
 
-        gpg_pkg_priv_key: |
-          -----BEGIN PGP PRIVATE KEY BLOCK-----
-          Version: GnuPG v1
+        .. code-block:: yaml
 
-          lQO+BFciIfQBCADAPCtzx7I5Rl32escCMZsPzaEKWe7bIX1em4KCKkBoX47IG54b
-          w82PCE8Y1jF/9Uk2m3RKVWp3YcLlc7Ap3gj6VO4ysvVz28UbnhPxsIkOlf2cq8qc
-          .
-          .
-          Ebe+8JCQTwqSXPRTzXmy/b5WXDeM79CkLWvuGpXFor76D+ECMRPv/rawukEcNptn
-          R5OmgHqvydEnO4pWbn8JzQO9YX/Us0SMHBVzLC8eIi5ZIopzalvX
-          =JvW8
-          -----END PGP PRIVATE KEY BLOCK-----
+            gpg_pkg_priv_key: |
+              -----BEGIN PGP PRIVATE KEY BLOCK-----
+              Version: GnuPG v1
 
-        gpg_pkg_priv_keyname: gpg_pkg_key.pem
+              lQO+BFciIfQBCADAPCtzx7I5Rl32escCMZsPzaEKWe7bIX1em4KCKkBoX47IG54b
+              w82PCE8Y1jF/9Uk2m3RKVWp3YcLlc7Ap3gj6VO4ysvVz28UbnhPxsIkOlf2cq8qc
+              .
+              .
+              Ebe+8JCQTwqSXPRTzXmy/b5WXDeM79CkLWvuGpXFor76D+ECMRPv/rawukEcNptn
+              R5OmgHqvydEnO4pWbn8JzQO9YX/Us0SMHBVzLC8eIi5ZIopzalvX
+              =JvW8
+              -----END PGP PRIVATE KEY BLOCK-----
 
-        gpg_pkg_pub_key: |
-          -----BEGIN PGP PUBLIC KEY BLOCK-----
-          Version: GnuPG v1
+            gpg_pkg_priv_keyname: gpg_pkg_key.pem
 
-          mQENBFciIfQBCADAPCtzx7I5Rl32escCMZsPzaEKWe7bIX1em4KCKkBoX47IG54b
-          w82PCE8Y1jF/9Uk2m3RKVWp3YcLlc7Ap3gj6VO4ysvVz28UbnhPxsIkOlf2cq8qc
-          .
-          .
-          bYP7t5iwJmQzRMyFInYRt77wkJBPCpJc9FPNebL9vlZcN4zv0KQta+4alcWivvoP
-          4QIxE+/+trC6QRw2m2dHk6aAeq/J0Sc7ilZufwnNA71hf9SzRIwcFXMsLx4iLlki
-          inNqW9c=
-          =s1CX
-          -----END PGP PUBLIC KEY BLOCK-----
+            gpg_pkg_pub_key: |
+              -----BEGIN PGP PUBLIC KEY BLOCK-----
+              Version: GnuPG v1
 
-        gpg_pkg_pub_keyname: gpg_pkg_key.pub
+              mQENBFciIfQBCADAPCtzx7I5Rl32escCMZsPzaEKWe7bIX1em4KCKkBoX47IG54b
+              w82PCE8Y1jF/9Uk2m3RKVWp3YcLlc7Ap3gj6VO4ysvVz28UbnhPxsIkOlf2cq8qc
+              .
+              .
+              bYP7t5iwJmQzRMyFInYRt77wkJBPCpJc9FPNebL9vlZcN4zv0KQta+4alcWivvoP
+              4QIxE+/+trC6QRw2m2dHk6aAeq/J0Sc7ilZufwnNA71hf9SzRIwcFXMsLx4iLlki
+              inNqW9c=
+              =s1CX
+              -----END PGP PUBLIC KEY BLOCK-----
+
+            gpg_pkg_pub_keyname: gpg_pkg_key.pub
 
     env
-        Optional dictionary of environment variables to be utlilized in creating the repository.
+        .. versionchanged:: 2016.3.0
 
+        A dictionary of environment variables to be utilized in creating the
+        repository.
+
+        .. note::
+
+            This parameter is not used for making ``yum`` repositories.
+
+    use_passphrase : False
         .. versionadded:: 2016.3.0
 
-    use_passphrase
-        Use a passphrase with the signing key presented in 'keyid'.
-        Passphrase is received from pillar data which has been passed on
-        the command line. For example:
+        Use a passphrase with the signing key presented in ``keyid``.
+        Passphrase is received from Pillar data which could be passed on the
+        command line with ``pillar`` parameter. For example:
 
-        pillar='{ "gpg_passphrase" : "my_passphrase" }'
+        .. code-block:: bash
 
-    gnupghome
-        Location where GPG related files are stored, used with 'keyid'
+            pillar='{ "gpg_passphrase" : "my_passphrase" }'
 
-    runas
+    gnupghome : /etc/salt/gpgkeys
+        .. versionadded:: 2016.3.0
+
+        Location where GPG related files are stored, used with ``keyid``.
+
+    runas : root
+        .. versionadded:: 2016.3.0
+
         User to create the repository as, and optionally sign packages.
 
-        Note: Ensure User has correct rights to any files and directories which
-              are to be utilized.
+        .. note::
+
+            Ensure the user has correct permissions to any files and
+            directories which are to be utilized.
+
+    timeout : 15.0
+        .. versionadded:: 2016.3.4
+
+        Timeout in seconds to wait for the prompt for inputting the passphrase.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' pkgbuild.make_repo /var/www/html/
+
     '''
     SIGN_PROMPT_RE = re.compile(r'Enter pass phrase: ', re.M)
 
-    local_keyid = None
     define_gpg_name = ''
+    local_keyid = None
     local_uids = None
+    phrase = ''
 
     if keyid is not None:
         ## import_keys
@@ -385,7 +447,8 @@ def make_repo(repodir, keyid=None, env=None, use_passphrase=False, gnupghome='/e
 
         except SaltInvocationError:
             raise SaltInvocationError(
-                'Public and Private key files associated with Pillar data and \'keyid\' {0} could not be found'
+                'Public and Private key files associated with Pillar data and \'keyid\' '
+                '{0} could not be found'
                 .format(keyid)
             )
 
@@ -400,37 +463,42 @@ def make_repo(repodir, keyid=None, env=None, use_passphrase=False, gnupghome='/e
 
         if local_keyid is None:
             raise SaltInvocationError(
-                '\'keyid\' was not found in gpg keyring'
+                'The key ID \'{0}\' was not found in GnuPG keyring at \'{1}\''
+                .format(keyid, gnupghome)
             )
 
         if use_passphrase:
             phrase = __salt__['pillar.get']('gpg_passphrase')
 
         if local_uids:
-            define_gpg_name = '--define=\'%_signature gpg\' --define=\'%_gpg_name {0}\''.format(local_uids[0])
+            define_gpg_name = '--define=\'%_signature gpg\' --define=\'%_gpg_name {0}\''.format(
+                local_uids[0]
+            )
 
         # need to update rpm with public key
         cmd = 'rpm --import {0}'.format(pkg_pub_key_file)
         __salt__['cmd.run'](cmd, runas=runas, use_vt=True)
 
         ## sign_it_here
+        # interval of 0.125 is really too fast on some systems
+        interval = 0.5
         for file in os.listdir(repodir):
             if file.endswith('.rpm'):
                 abs_file = os.path.join(repodir, file)
-                number_retries = 5
+                number_retries = timeout / interval
                 times_looped = 0
                 error_msg = 'Failed to sign file {0}'.format(abs_file)
                 cmd = 'rpm {0} --addsign {1}'.format(define_gpg_name, abs_file)
-                preexec_fn = functools.partial(salt.utils.chugid_and_umask, runas, None)
+                preexec_fn = functools.partial(salt.utils.user.chugid_and_umask, runas, None)
                 try:
                     stdout, stderr = None, None
                     proc = salt.utils.vt.Terminal(
-                            cmd,
-                            shell=True,
-                            preexec_fn=preexec_fn,
-                            stream_stdout=True,
-                            stream_stderr=True
-                            )
+                        cmd,
+                        shell=True,
+                        preexec_fn=preexec_fn,
+                        stream_stdout=True,
+                        stream_stderr=True
+                    )
                     while proc.has_unread_data:
                         stdout, stderr = proc.recv()
                         if stdout and SIGN_PROMPT_RE.search(stdout):
@@ -441,16 +509,17 @@ def make_repo(repodir, keyid=None, env=None, use_passphrase=False, gnupghome='/e
 
                         if times_looped > number_retries:
                             raise SaltInvocationError(
-                                    'Attemping to sign file {0} failed, timed out after {1} loops'.format(abs_file, times_looped)
-                             )
-                        # 0.125 is really too fast on some systems
-                        time.sleep(0.5)
+                                'Attemping to sign file {0} failed, timed out after {1} seconds'
+                                .format(abs_file, int(times_looped * interval))
+                            )
+                        time.sleep(interval)
 
                     proc_exitstatus = proc.exitstatus
                     if proc_exitstatus != 0:
                         raise SaltInvocationError(
-                             'Signing file {0} failed with proc.status {1}'.format(abs_file, proc_exitstatus)
-                             )
+                            'Signing file {0} failed with proc.status {1}'
+                            .format(abs_file, proc_exitstatus)
+                        )
                 except salt.utils.vt.TerminalException as err:
                     trace = traceback.format_exc()
                     log.error(error_msg, err, trace)
@@ -458,4 +527,4 @@ def make_repo(repodir, keyid=None, env=None, use_passphrase=False, gnupghome='/e
                     proc.close(terminate=True, kill=True)
 
     cmd = 'createrepo --update {0}'.format(repodir)
-    __salt__['cmd.run'](cmd, runas=runas)
+    return __salt__['cmd.run_all'](cmd, runas=runas)

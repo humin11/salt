@@ -10,12 +10,9 @@ Module for running ethtool command
 :platform:      linux
 '''
 
-from __future__ import absolute_import
-
 # Import python libs
+from __future__ import absolute_import, print_function, unicode_literals
 import logging
-
-# Import salt libs
 
 # Import third party libs
 try:
@@ -70,15 +67,19 @@ ethtool_ring_remap = {}
 for k, v in ethtool_ring_map.items():
     ethtool_ring_remap[v] = k
 
+# Define the module's virtual name
+__virtualname__ = 'ethtool'
+
 
 def __virtual__():
     '''
     Only load this module if python-ethtool is installed
     '''
     if HAS_ETHTOOL:
-        return 'ethtool'
+        return __virtualname__
     else:
-        return False
+        return (False, 'The ethtool module could not be loaded: ethtool '
+                'python libraries not found.')
 
 
 def show_ring(devname):
@@ -95,11 +96,7 @@ def show_ring(devname):
     try:
         ring = ethtool.get_ringparam(devname)
     except IOError:
-        log.error(
-            'Ring parameters not supported on {0}'.format(
-                devname
-            )
-        )
+        log.error('Ring parameters not supported on %s', devname)
         return 'Not supported'
 
     ret = {}
@@ -123,11 +120,7 @@ def show_coalesce(devname):
     try:
         coalesce = ethtool.get_coalesce(devname)
     except IOError:
-        log.error(
-            'Interrupt coalescing not supported on {0}'.format(
-                devname
-            )
-        )
+        log.error('Interrupt coalescing not supported on %s', devname)
         return 'Not supported'
 
     ret = {}
@@ -151,21 +144,13 @@ def show_driver(devname):
     try:
         module = ethtool.get_module(devname)
     except IOError:
-        log.error(
-            'Driver information not implemented on {0}'.format(
-                devname
-            )
-        )
+        log.error('Driver information not implemented on %s', devname)
         return 'Not implemented'
 
     try:
         businfo = ethtool.get_businfo(devname)
     except IOError:
-        log.error(
-            'Bus information no available on {0}'.format(
-                devname
-            )
-        )
+        log.error('Bus information no available on %s', devname)
         return 'Not available'
 
     ret = {
@@ -184,17 +169,13 @@ def set_ring(devname, **kwargs):
 
     .. code-block:: bash
 
-        salt '*' ethtool.set_ring <devname> [ring=N] [rx_mini=N] [rx_jumbo=N] [tx=N]
+        salt '*' ethtool.set_ring <devname> [rx=N] [rx_mini=N] [rx_jumbo=N] [tx=N]
     '''
 
     try:
         ring = ethtool.get_ringparam(devname)
     except IOError:
-        log.error(
-            'Ring parameters not supported on {0}'.format(
-                devname
-            )
-        )
+        log.error('Ring parameters not supported on %s', devname)
         return 'Not supported'
 
     changed = False
@@ -211,11 +192,7 @@ def set_ring(devname, **kwargs):
             ethtool.set_ringparam(devname, ring)
         return show_ring(devname)
     except IOError:
-        log.error(
-            'Invalid ring arguments on {0}: {1}'.format(
-                devname, ring
-            )
-        )
+        log.error('Invalid ring arguments on %s: %s', devname, ring)
         return 'Invalid arguments'
 
 
@@ -237,11 +214,7 @@ def set_coalesce(devname, **kwargs):
     try:
         coalesce = ethtool.get_coalesce(devname)
     except IOError:
-        log.error(
-            'Interrupt coalescing not supported on {0}'.format(
-                devname
-            )
-        )
+        log.error('Interrupt coalescing not supported on %s', devname)
         return 'Not supported'
 
     changed = False
@@ -258,11 +231,7 @@ def set_coalesce(devname, **kwargs):
             ethtool.set_coalesce(devname, coalesce)
         return show_coalesce(devname)
     except IOError:
-        log.error(
-            'Invalid coalesce arguments on {0}: {1}'.format(
-                devname, coalesce
-            )
-        )
+        log.error('Invalid coalesce arguments on %s: %s', devname, coalesce)
         return 'Invalid arguments'
 
 
@@ -315,7 +284,7 @@ def set_offload(devname, **kwargs):
 
     .. code-block:: bash
 
-        salt '*' ethtool.show_offload <devname>
+        salt '*' ethtool.set_offload <devname> tcp_segmentation_offload=on
     '''
 
     for param, value in kwargs.items():

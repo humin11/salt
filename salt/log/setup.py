@@ -14,7 +14,7 @@
 '''
 
 # Import python libs
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 import os
 import re
 import sys
@@ -27,7 +27,7 @@ import traceback
 import multiprocessing
 
 # Import 3rd-party libs
-import salt.ext.six as six
+from salt.ext import six
 from salt.ext.six.moves.urllib.parse import urlparse  # pylint: disable=import-error,no-name-in-module
 
 # Let's define these custom logging levels before importing the salt.log.mixins
@@ -44,6 +44,7 @@ from salt.log.handlers import (TemporaryLoggingHandler,
                                SysLogHandler,
                                FileHandler,
                                WatchedFileHandler,
+                               RotatingFileHandler,
                                QueueHandler)
 from salt.log.mixins import LoggingMixInMeta, NewStyleClassMixIn
 
@@ -61,6 +62,7 @@ LOG_LEVELS = {
     'warning': logging.WARNING,
 }
 
+LOG_VALUES_TO_LEVELS = dict((v, k) for (k, v) in LOG_LEVELS.items())
 
 LOG_COLORS = {
     'levels': {
@@ -107,15 +109,33 @@ LOGGING_LOGGER_CLASS = logging.getLoggerClass()
 MODNAME_PATTERN = re.compile(r'(?P<name>%%\(name\)(?:\-(?P<digits>[\d]+))?s)')
 
 __CONSOLE_CONFIGURED = False
+__LOGGING_CONSOLE_HANDLER = None
 __LOGFILE_CONFIGURED = False
+__LOGGING_LOGFILE_HANDLER = None
 __TEMP_LOGGING_CONFIGURED = False
 __EXTERNAL_LOGGERS_CONFIGURED = False
 __MP_LOGGING_LISTENER_CONFIGURED = False
 __MP_LOGGING_CONFIGURED = False
 __MP_LOGGING_QUEUE = None
+__MP_LOGGING_LEVEL = GARBAGE
 __MP_LOGGING_QUEUE_PROCESS = None
 __MP_LOGGING_QUEUE_HANDLER = None
 __MP_IN_MAINPROCESS = multiprocessing.current_process().name == 'MainProcess'
+__MP_MAINPROCESS_ID = None
+
+
+class __NullLoggingHandler(TemporaryLoggingHandler):
+    '''
+    This class exists just to better identify which temporary logging
+    handler is being used for what.
+    '''
+
+
+class __StoreLoggingHandler(TemporaryLoggingHandler):
+    '''
+    This class exists just to better identify which temporary logging
+    handler is being used for what.
+    '''
 
 
 def is_console_configured():
@@ -145,15 +165,14 @@ def is_mp_logging_configured():
 def is_extended_logging_configured():
     return __EXTERNAL_LOGGERS_CONFIGURED
 
-
 # Store a reference to the temporary queue logging handler
-LOGGING_NULL_HANDLER = TemporaryLoggingHandler(logging.WARNING)
+LOGGING_NULL_HANDLER = __NullLoggingHandler(logging.WARNING)
 
 # Store a reference to the temporary console logger
 LOGGING_TEMP_HANDLER = StreamHandler(sys.stderr)
 
 # Store a reference to the "storing" logging handler
-LOGGING_STORE_HANDLER = TemporaryLoggingHandler()
+LOGGING_STORE_HANDLER = __StoreLoggingHandler()
 
 
 class SaltLogQueueHandler(QueueHandler):
@@ -184,7 +203,7 @@ class SaltColorLogRecord(SaltLogRecord):
                                           reset)
         self.colorlevel = '%s[%-8s]%s' % (clevel,
                                           self.levelname,
-                                          TextFormat('reset'))
+                                          reset)
         self.colorprocess = '%s[%5s]%s' % (LOG_COLORS['process'],
                                            self.process,
                                            reset)
@@ -234,7 +253,7 @@ class SaltLoggingClass(six.with_metaclass(LoggingMixInMeta, LOGGING_LOGGER_CLASS
 
         try:
             max_logger_length = len(max(
-                list(logging.Logger.manager.loggerDict.keys()), key=len
+                list(logging.Logger.manager.loggerDict), key=len
             ))
             for handler in logging.root.handlers:
                 if handler in (LOGGING_NULL_HANDLER,
@@ -321,14 +340,15 @@ class SaltLoggingClass(six.with_metaclass(LoggingMixInMeta, LOGGING_LOGGER_CLASS
             extra = None
 
         # Let's try to make every logging message unicode
+        salt_system_encoding = __salt_system_encoding__
+        if salt_system_encoding == 'ascii':
+            # Encoding detection most likely failed, let's use the utf-8
+            # value which we defaulted before __salt_system_encoding__ was
+            # implemented
+            salt_system_encoding = 'utf-8'
+
         if isinstance(msg, six.string_types) \
                 and not isinstance(msg, six.text_type):
-            salt_system_encoding = __salt_system_encoding__
-            if salt_system_encoding == 'ascii':
-                # Encoding detection most likely failed, let's use the utf-8
-                # value which we defaulted before __salt_system_encoding__ was
-                # implemented
-                salt_system_encoding = 'utf-8'
             try:
                 _msg = msg.decode(salt_system_encoding, 'replace')
             except UnicodeDecodeError:
@@ -336,11 +356,23 @@ class SaltLoggingClass(six.with_metaclass(LoggingMixInMeta, LOGGING_LOGGER_CLASS
         else:
             _msg = msg
 
+        _args = []
+        for item in args:
+            if isinstance(item, six.string_types) \
+                    and not isinstance(item, six.text_type):
+                try:
+                    _args.append(item.decode(salt_system_encoding, 'replace'))
+                except UnicodeDecodeError:
+                    _args.append(item.decode(salt_system_encoding, 'ignore'))
+            else:
+                _args.append(item)
+        _args = tuple(_args)
+
         if six.PY3:
-            logrecord = _LOG_RECORD_FACTORY(name, level, fn, lno, _msg, args,
+            logrecord = _LOG_RECORD_FACTORY(name, level, fn, lno, _msg, _args,
                                             exc_info, func, sinfo)
         else:
-            logrecord = _LOG_RECORD_FACTORY(name, level, fn, lno, _msg, args,
+            logrecord = _LOG_RECORD_FACTORY(name, level, fn, lno, _msg, _args,
                                             exc_info, func)
 
         if extra is not None:
@@ -501,11 +533,13 @@ def setup_console_logger(log_level='error', log_format=None, date_format=None):
     logging.root.addHandler(handler)
 
     global __CONSOLE_CONFIGURED
+    global __LOGGING_CONSOLE_HANDLER
     __CONSOLE_CONFIGURED = True
+    __LOGGING_CONSOLE_HANDLER = handler
 
 
 def setup_logfile_logger(log_path, log_level='error', log_format=None,
-                         date_format=None):
+                         date_format=None, max_bytes=0, backup_count=0):
     '''
     Setup the logfile logger
 
@@ -624,23 +658,41 @@ def setup_logfile_logger(log_path, log_level='error', log_format=None,
             handler = SysLogHandler(**syslog_opts)
         except socket.error as err:
             logging.getLogger(__name__).error(
-                'Failed to setup the Syslog logging handler: {0}'.format(
-                    err
-                )
+                'Failed to setup the Syslog logging handler: %s', err
             )
             shutdown_multiprocessing_logging_listener()
             sys.exit(2)
     else:
+        # make sure, the logging directory exists and attempt to create it if necessary
+        log_dir = os.path.dirname(log_path)
+        if not os.path.exists(log_dir):
+            logging.getLogger(__name__).info(
+                'Log directory not found, trying to create it: %s', log_dir
+            )
+            try:
+                os.makedirs(log_dir, mode=0o700)
+            except OSError as ose:
+                logging.getLogger(__name__).warning(
+                    'Failed to create directory for log file: %s (%s)', log_dir, ose
+                )
+                return
         try:
             # Logfile logging is UTF-8 on purpose.
             # Since salt uses YAML and YAML uses either UTF-8 or UTF-16, if a
             # user is not using plain ASCII, their system should be ready to
             # handle UTF-8.
-            handler = WatchedFileHandler(log_path, mode='a', encoding='utf-8', delay=0)
+            if max_bytes > 0:
+                handler = RotatingFileHandler(log_path,
+                                              mode='a',
+                                              maxBytes=max_bytes,
+                                              backupCount=backup_count,
+                                              encoding='utf-8',
+                                              delay=0)
+            else:
+                handler = WatchedFileHandler(log_path, mode='a', encoding='utf-8', delay=0)
         except (IOError, OSError):
             logging.getLogger(__name__).warning(
-                'Failed to open log file, do you have permission to write to '
-                '{0}?'.format(log_path)
+                'Failed to open log file, do you have permission to write to %s?', log_path
             )
             # Do not proceed with any more configuration since it will fail, we
             # have the console logging already setup and the user should see
@@ -661,7 +713,9 @@ def setup_logfile_logger(log_path, log_level='error', log_format=None,
     root_logger.addHandler(handler)
 
     global __LOGFILE_CONFIGURED
+    global __LOGGING_LOGFILE_HANDLER
     __LOGFILE_CONFIGURED = True
+    __LOGGING_LOGFILE_HANDLER = handler
 
 
 def setup_extended_logging(opts):
@@ -686,9 +740,7 @@ def setup_extended_logging(opts):
     additional_handlers = []
 
     for name, get_handlers_func in six.iteritems(providers):
-        logging.getLogger(__name__).info(
-            'Processing `log_handlers.{0}`'.format(name)
-        )
+        logging.getLogger(__name__).info('Processing `log_handlers.%s`', name)
         # Keep a reference to the logging handlers count before getting the
         # possible additional ones.
         initial_handlers_count = len(logging.root.handlers)
@@ -700,9 +752,9 @@ def setup_extended_logging(opts):
             # A false return value means not configuring any logging handler on
             # purpose
             logging.getLogger(__name__).info(
-                'The `log_handlers.{0}.setup_handlers()` function returned '
+                'The `log_handlers.%s.setup_handlers()` function returned '
                 '`False` which means no logging handler was configured on '
-                'purpose. Continuing...'.format(name)
+                'purpose. Continuing...', name
             )
             continue
         else:
@@ -713,17 +765,16 @@ def setup_extended_logging(opts):
             if not handler and \
                     len(logging.root.handlers) == initial_handlers_count:
                 logging.getLogger(__name__).info(
-                    'The `log_handlers.{0}`, did not return any handlers '
+                    'The `log_handlers.%s`, did not return any handlers '
                     'and the global handlers count did not increase. This '
-                    'could be a sign of `log_handlers.{0}` not working as '
-                    'supposed'.format(name)
+                    'could be a sign of `log_handlers.%s` not working as '
+                    'supposed', name, name
                 )
                 continue
 
             logging.getLogger(__name__).debug(
-                'Adding the \'{0}\' provided logging handler: \'{1}\''.format(
-                    name, handler
-                )
+                'Adding the \'%s\' provided logging handler: \'%s\'',
+                name, handler
             )
             additional_handlers.append(handler)
             logging.root.addHandler(handler)
@@ -770,9 +821,38 @@ def set_multiprocessing_logging_queue(queue):
         __MP_LOGGING_QUEUE = queue
 
 
+def get_multiprocessing_logging_level():
+    return __MP_LOGGING_LEVEL
+
+
+def set_multiprocessing_logging_level(log_level):
+    global __MP_LOGGING_LEVEL
+    __MP_LOGGING_LEVEL = log_level
+
+
+def set_multiprocessing_logging_level_by_opts(opts):
+    '''
+    This will set the multiprocessing logging level to the lowest
+    logging level of all the types of logging that are configured.
+    '''
+    global __MP_LOGGING_LEVEL
+
+    log_levels = [
+        LOG_LEVELS.get(opts.get('log_level', '').lower(), logging.ERROR),
+        LOG_LEVELS.get(opts.get('log_level_logfile', '').lower(), logging.ERROR)
+    ]
+    for level in six.itervalues(opts.get('log_granular_levels', {})):
+        log_levels.append(
+            LOG_LEVELS.get(level.lower(), logging.ERROR)
+        )
+
+    __MP_LOGGING_LEVEL = min(log_levels)
+
+
 def setup_multiprocessing_logging_listener(opts, queue=None):
     global __MP_LOGGING_QUEUE_PROCESS
     global __MP_LOGGING_LISTENER_CONFIGURED
+    global __MP_MAINPROCESS_ID
 
     if __MP_IN_MAINPROCESS is False:
         # We're not in the MainProcess, return! No logging listener setup shall happen
@@ -781,6 +861,11 @@ def setup_multiprocessing_logging_listener(opts, queue=None):
     if __MP_LOGGING_LISTENER_CONFIGURED is True:
         return
 
+    if __MP_MAINPROCESS_ID is not None and __MP_MAINPROCESS_ID != os.getpid():
+        # We're not in the MainProcess, return! No logging listener setup shall happen
+        return
+
+    __MP_MAINPROCESS_ID = os.getpid()
     __MP_LOGGING_QUEUE_PROCESS = multiprocessing.Process(
         target=__process_multiprocessing_logging_queue,
         args=(opts, queue or get_multiprocessing_logging_queue(),)
@@ -795,11 +880,15 @@ def setup_multiprocessing_logging(queue=None):
     This code should be called from within a running multiprocessing
     process instance.
     '''
+    from salt.utils.platform import is_windows
+
     global __MP_LOGGING_CONFIGURED
     global __MP_LOGGING_QUEUE_HANDLER
 
-    if __MP_IN_MAINPROCESS is True:
+    if __MP_IN_MAINPROCESS is True and not is_windows():
         # We're in the MainProcess, return! No multiprocessing logging setup shall happen
+        # Windows is the exception where we want to set up multiprocessing
+        # logging in the MainProcess.
         return
 
     try:
@@ -823,11 +912,13 @@ def setup_multiprocessing_logging(queue=None):
         # Let's add a queue handler to the logging root handlers
         __MP_LOGGING_QUEUE_HANDLER = SaltLogQueueHandler(queue or get_multiprocessing_logging_queue())
         logging.root.addHandler(__MP_LOGGING_QUEUE_HANDLER)
-        # Set the logging root level to the lowest to get all messages
-        logging.root.setLevel(logging.GARBAGE)
+        # Set the logging root level to the lowest needed level to get all
+        # desired messages.
+        log_level = get_multiprocessing_logging_level()
+        logging.root.setLevel(log_level)
         logging.getLogger(__name__).debug(
             'Multiprocessing queue logging configured for the process running '
-            'under PID: {0}'.format(os.getpid())
+            'under PID: %s at log level %s', os.getpid(), log_level
         )
         # The above logging call will create, in some situations, a futex wait
         # lock condition, probably due to the multiprocessing Queue's internal
@@ -838,21 +929,61 @@ def setup_multiprocessing_logging(queue=None):
         logging._releaseLock()  # pylint: disable=protected-access
 
 
-def shutdown_multiprocessing_logging():
-    global __MP_LOGGING_CONFIGURED
-    global __MP_LOGGING_QUEUE_HANDLER
+def shutdown_console_logging():
+    global __CONSOLE_CONFIGURED
+    global __LOGGING_CONSOLE_HANDLER
 
-    if __MP_IN_MAINPROCESS is True:
-        # We're in the MainProcess, return! No multiprocessing logging shutdown shall happen
+    if not __CONSOLE_CONFIGURED or not __LOGGING_CONSOLE_HANDLER:
         return
 
     try:
         logging._acquireLock()
-        if __MP_LOGGING_CONFIGURED is True:
-            # Let's remove the queue handler from the logging root handlers
-            logging.root.removeHandler(__MP_LOGGING_QUEUE_HANDLER)
-            __MP_LOGGING_QUEUE_HANDLER = None
-            __MP_LOGGING_CONFIGURED = False
+        logging.root.removeHandler(__LOGGING_CONSOLE_HANDLER)
+        __LOGGING_CONSOLE_HANDLER = None
+        __CONSOLE_CONFIGURED = False
+    finally:
+        logging._releaseLock()
+
+
+def shutdown_logfile_logging():
+    global __LOGFILE_CONFIGURED
+    global __LOGGING_LOGFILE_HANDLER
+
+    if not __LOGFILE_CONFIGURED or not __LOGGING_LOGFILE_HANDLER:
+        return
+
+    try:
+        logging._acquireLock()
+        logging.root.removeHandler(__LOGGING_LOGFILE_HANDLER)
+        __LOGGING_LOGFILE_HANDLER = None
+        __LOGFILE_CONFIGURED = False
+    finally:
+        logging._releaseLock()
+
+
+def shutdown_temp_logging():
+    __remove_temp_logging_handler()
+
+
+def shutdown_multiprocessing_logging():
+    global __MP_LOGGING_CONFIGURED
+    global __MP_LOGGING_QUEUE_HANDLER
+
+    if not __MP_LOGGING_CONFIGURED or not __MP_LOGGING_QUEUE_HANDLER:
+        return
+
+    try:
+        logging._acquireLock()
+        # Let's remove the queue handler from the logging root handlers
+        logging.root.removeHandler(__MP_LOGGING_QUEUE_HANDLER)
+        __MP_LOGGING_QUEUE_HANDLER = None
+        __MP_LOGGING_CONFIGURED = False
+        if not logging.root.handlers:
+            # Ensure we have at least one logging root handler so
+            # something can handle logging messages. This case should
+            # only occur on Windows since on Windows we log to console
+            # and file through the Multiprocessing Logging Listener.
+            setup_console_logger()
     finally:
         logging._releaseLock()
 
@@ -866,8 +997,19 @@ def shutdown_multiprocessing_logging_listener(daemonizing=False):
         # We're in the MainProcess and we're not daemonizing, return!
         # No multiprocessing logging listener shutdown shall happen
         return
+
+    if not daemonizing:
+        # Need to remove the queue handler so that it doesn't try to send
+        # data over a queue that was shut down on the listener end.
+        shutdown_multiprocessing_logging()
+
     if __MP_LOGGING_QUEUE_PROCESS is None:
         return
+
+    if __MP_MAINPROCESS_ID is not None and __MP_MAINPROCESS_ID != os.getpid():
+        # We're not in the MainProcess, return! No logging listener setup shall happen
+        return
+
     if __MP_LOGGING_QUEUE_PROCESS.is_alive():
         logging.getLogger(__name__).debug('Stopping the multiprocessing logging queue listener')
         try:
@@ -911,18 +1053,41 @@ def patch_python_logging_handlers():
     logging.FileHandler = FileHandler
     logging.handlers.SysLogHandler = SysLogHandler
     logging.handlers.WatchedFileHandler = WatchedFileHandler
+    logging.handlers.RotatingFileHandler = RotatingFileHandler
     if sys.version_info >= (3, 2):
         logging.handlers.QueueHandler = QueueHandler
 
 
 def __process_multiprocessing_logging_queue(opts, queue):
-    import salt.utils
-    salt.utils.appendproctitle('MultiprocessingLoggingQueue')
-    if salt.utils.is_windows():
+    # Avoid circular import
+    import salt.utils.process
+    salt.utils.process.appendproctitle('MultiprocessingLoggingQueue')
+
+    # Assign UID/GID of user to proc if set
+    from salt.utils.verify import check_user
+    user = opts.get('user')
+    if user:
+        check_user(user)
+
+    from salt.utils.platform import is_windows
+    if is_windows():
         # On Windows, creating a new process doesn't fork (copy the parent
-        # process image). Due to this, we need to setup extended logging
+        # process image). Due to this, we need to setup all of our logging
         # inside this process.
         setup_temp_logger()
+        setup_console_logger(
+            log_level=opts.get('log_level'),
+            log_format=opts.get('log_fmt_console'),
+            date_format=opts.get('log_datefmt_console')
+        )
+        setup_logfile_logger(
+            opts.get('log_file'),
+            log_level=opts.get('log_level_logfile'),
+            log_format=opts.get('log_fmt_logfile'),
+            date_format=opts.get('log_datefmt_logfile'),
+            max_bytes=opts.get('log_rotate_max_bytes', 0),
+            backup_count=opts.get('log_rotate_backup_count', 0)
+        )
         setup_extended_logging(opts)
     while True:
         try:
@@ -939,8 +1104,7 @@ def __process_multiprocessing_logging_queue(opts, queue):
         except Exception as exc:  # pylint: disable=broad-except
             logging.getLogger(__name__).warning(
                 'An exception occurred in the multiprocessing logging '
-                'queue thread: {0}'.format(exc),
-                exc_info_on_loglevel=logging.DEBUG
+                'queue thread: %s', exc, exc_info_on_loglevel=logging.DEBUG
             )
 
 
@@ -1025,13 +1189,12 @@ def __global_logging_exception_handler(exc_type, exc_value, exc_traceback):
         # Log the exception
         logging.getLogger(__name__).error(
             'An un-handled exception was caught by salt\'s global exception '
-            'handler:\n{0}: {1}\n{2}'.format(
-                exc_type.__name__,
-                exc_value,
-                ''.join(traceback.format_exception(
-                    exc_type, exc_value, exc_traceback
-                )).strip()
-            )
+            'handler:\n%s: %s\n%s',
+            exc_type.__name__,
+            exc_value,
+            ''.join(traceback.format_exception(
+                exc_type, exc_value, exc_traceback
+            )).strip()
         )
         # Call the original sys.excepthook
         sys.__excepthook__(exc_type, exc_value, exc_traceback)

@@ -16,6 +16,13 @@ The following fields can be set in the minion conf file::
     hipchat.profile (optional)
     hipchat.url (optional)
 
+.. note::
+
+    When using Hipchat's API v2, ``api_key`` needs to be assigned to the room with the
+    "Label" set to what you would have been set in the hipchat.from_name field. The v2
+    API disregards the ``from_name`` in the data sent for the room notification and uses
+    the Label assigned through the Hipchat control panel.
+
 Alternative configuration values can be used by prefacing the configuration.
 Any values not found in the alternative configuration will be pulled from
 the default location::
@@ -86,14 +93,14 @@ To override individual configuration items, append --return_kwargs '{"key:": "va
     salt '*' test.ping --return hipchat --return_kwargs '{"room_id": "another-room"}'
 
 '''
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 
 # Import Python libs
-import json
 import pprint
 import logging
 
 # pylint: disable=import-error,no-name-in-module
+from salt.ext import six
 from salt.ext.six.moves.urllib.parse import urljoin as _urljoin
 from salt.ext.six.moves.urllib.parse import urlencode as _urlencode
 import salt.ext.six.moves.http_client
@@ -101,6 +108,7 @@ import salt.ext.six.moves.http_client
 
 # Import Salt Libs
 import salt.returners
+import salt.utils.json
 
 
 log = logging.getLogger(__name__)
@@ -176,7 +184,7 @@ def _query(function,
     query_params = {}
 
     if room_id:
-        room_id = 'room/{0}/notification'.format(str(room_id))
+        room_id = 'room/{0}/notification'.format(six.text_type(room_id))
     else:
         room_id = 'room/0/notification'
 
@@ -233,7 +241,7 @@ def _query(function,
         headers['Content-Type'] = 'application/json'
         headers['Authorization'] = 'Bearer {0}'.format(api_key)
         if data:
-            data = json.dumps(data)
+            data = salt.utils.json.dumps(data)
     else:
         log.error('Unsupported HipChat API version')
         return False
@@ -381,7 +389,7 @@ def event_return(events):
         # TODO:
         # Pre-process messages to apply individualized colors for various
         # event types.
-        log.trace('Hipchat returner received event: {0}'.format(event))
+        log.trace('Hipchat returner received event: %s', event)
         _send_message(_options.get('room_id'),  # room_id
                       event['data'],  # message
                       _options.get('from_name'),  # from_name

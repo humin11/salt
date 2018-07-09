@@ -24,8 +24,18 @@ Mount any type of mountable filesystem with the mounted function:
         - pass_num: 2
         - persist: True
         - mkmnt: True
+
+    /var/lib/bigdata:
+      mount.mounted:
+        - device: /srv/bigdata
+        - fstype: none
+        - opts: bind
+        - dump: 0
+        - pass_num: 0
+        - persist: True
+        - mkmnt: True
 '''
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 
 # Import python libs
 import os.path
@@ -35,8 +45,17 @@ import re
 from salt.ext.six import string_types
 
 import logging
-import salt.ext.six as six
+from salt.ext import six
 log = logging.getLogger(__name__)
+
+
+def _size_convert(_re_size):
+    converted_size = int(_re_size.group('size_value'))
+    if _re_size.group('size_unit') == 'm':
+        converted_size = int(converted_size) * 1024
+    if _re_size.group('size_unit') == 'g':
+        converted_size = int(converted_size) * 1024 * 1024
+    return converted_size
 
 
 def mounted(name,
@@ -51,11 +70,13 @@ def mounted(name,
             mount=True,
             user=None,
             match_on='auto',
+            device_name_regex=None,
             extra_mount_invisible_options=None,
             extra_mount_invisible_keys=None,
             extra_mount_ignore_fs_keys=None,
             extra_mount_translate_options=None,
-            hidden_opts=None):
+            hidden_opts=None,
+            **kwargs):
     '''
     Verify that a device is mounted
 
@@ -68,7 +89,7 @@ def mounted(name,
 
     fstype
         The filesystem type, this will be ``xfs``, ``ext2/3/4`` in the case of classic
-        filesystems, and ``fuse`` in the case of fuse mounts
+        filesystems, ``fuse`` in the case of fuse mounts, and ``nfs`` in the case of nfs mounts
 
     mkmnt
         If the mount point is not present then the state will fail, set ``mkmnt: True``
@@ -93,7 +114,7 @@ def mounted(name,
         Set if the mount should be mounted immediately, Default is ``True``
 
     user
-        The user to own the mount; this defaults to the user salt is
+        The account used to execute the mount; this defaults to the user salt is
         running as on the minion
 
     match_on
@@ -102,29 +123,64 @@ def mounted(name,
         In general, ``auto`` matches on name for recognized special devices and
         device otherwise.
 
+    device_name_regex
+        A list of device exact names or regular expressions which should
+        not force a remount. For example, glusterfs may be mounted with a
+        comma-separated list of servers in fstab, but the /proc/self/mountinfo
+        will show only the first available server.
+
+        .. code-block:: jinja
+
+            {% set glusterfs_ip_list = ['10.0.0.1', '10.0.0.2', '10.0.0.3'] %}
+
+            mount glusterfs volume:
+              mount.mounted:
+                - name: /mnt/glusterfs_mount_point
+                - device: {{ glusterfs_ip_list|join(',') }}:/volume_name
+                - fstype: glusterfs
+                - opts: _netdev,rw,defaults,direct-io-mode=disable
+                - mkmnt: True
+                - persist: True
+                - dump: 0
+                - pass_num: 0
+                - device_name_regex:
+                  - ({{ glusterfs_ip_list|join('|') }}):/volume_name
+
+        .. versionadded:: 2016.11.0
+
     extra_mount_invisible_options
-        A list of extra options that are not visible through the /proc/self/mountinfo
-        interface. If a option is not visible through this interface it will always
-        remount the device. This Option extends the builtin mount_invisible_options list.
+        A list of extra options that are not visible through the
+        ``/proc/self/mountinfo`` interface.
+
+        If a option is not visible through this interface it will always remount
+        the device. This option extends the builtin ``mount_invisible_options``
+        list.
 
     extra_mount_invisible_keys
-        A list of extra key options that are not visible through the /proc/self/mountinfo
-        interface. If a key option is not visible through this interface it will always
-        remount the device. This Option extends the builtin mount_invisible_keys list.
-        A good example for a key Option is the password Option:
+        A list of extra key options that are not visible through the
+        ``/proc/self/mountinfo`` interface.
+
+        If a key option is not visible through this interface it will always
+        remount the device. This option extends the builtin
+        ``mount_invisible_keys`` list.
+
+        A good example for a key option is the password option::
+
             password=badsecret
 
-    extra_ignore_fs_keys
+    extra_mount_ignore_fs_keys
         A dict of filesystem options which should not force a remount. This will update
-        the internal dictionary. The dict should look like this:
+        the internal dictionary. The dict should look like this::
+
             {
                 'ramfs': ['size']
             }
 
     extra_mount_translate_options
         A dict of mount options that gets translated when mounted. To prevent a remount
-        add additional Options to the default dictionary. This will update the internal
-        dictionary. The dictionary should look like this:
+        add additional options to the default dictionary. This will update the internal
+        dictionary. The dictionary should look like this::
+
             {
                 'tcp': 'proto=tcp',
                 'udp': 'proto=udp'
@@ -140,6 +196,11 @@ def mounted(name,
            'changes': {},
            'result': True,
            'comment': ''}
+
+    update_mount_cache = False
+
+    if device_name_regex is None:
+        device_name_regex = []
 
     # Defaults is not a valid option on Mac OS
     if __grains__['os'] in ['MacOS', 'Darwin'] and opts == 'defaults':
@@ -280,10 +341,12 @@ def mounted(name,
                 mount_invisible_keys = [
                     'actimeo',
                     'comment',
+                    'credentials',
                     'direct-io-mode',
                     'password',
-                    'retry',
                     'port',
+                    'retry',
+                    'secretfile',
                 ]
 
                 if extra_mount_invisible_keys:
@@ -316,15 +379,14 @@ def mounted(name,
 
                     size_match = re.match(r'size=(?P<size_value>[0-9]+)(?P<size_unit>k|m|g)', opt)
                     if size_match:
-                        converted_size = int(size_match.group('size_value'))
-                        if size_match.group('size_unit') == 'm':
-                            converted_size = int(size_match.group('size_value')) * 1024
-                        if size_match.group('size_unit') == 'g':
-                            converted_size = int(size_match.group('size_value')) * 1024 * 1024
+                        converted_size = _size_convert(size_match)
                         opt = "size={0}k".format(converted_size)
                     # make cifs option user synonym for option username which is reported by /proc/mounts
                     if fstype in ['cifs'] and opt.split('=')[0] == 'user':
                         opt = "username={0}".format(opt.split('=')[1])
+
+                    if opt.split('=')[0] in mount_ignore_fs_keys.get(fstype, []):
+                        opt = opt.split('=')[0]
 
                     # convert uid/gid to numeric value from user/group name
                     name_id_opts = {'uid': 'user.info',
@@ -337,10 +399,20 @@ def mounted(name,
                             _info = __salt__[name_id_opts[_param]](_givenid)
                             if _info and _param in _info:
                                 _id = _info[_param]
-                        opt = _param + '=' + str(_id)
+                        opt = _param + '=' + six.text_type(_id)
+
+                    _active_superopts = active[real_name].get('superopts', [])
+                    for _active_opt in _active_superopts:
+                        size_match = re.match(r'size=(?P<size_value>[0-9]+)(?P<size_unit>k|m|g)', _active_opt)
+                        if size_match:
+                            converted_size = _size_convert(size_match)
+                            opt = "size={0}k".format(converted_size)
+                            _active_superopts.remove(_active_opt)
+                            _active_opt = "size={0}k".format(converted_size)
+                            _active_superopts.append(_active_opt)
 
                     if opt not in active[real_name]['opts'] \
-                    and opt not in active[real_name].get('superopts', []) \
+                    and opt not in _active_superopts \
                     and opt not in mount_invisible_options \
                     and opt not in mount_ignore_fs_keys.get(fstype, []) \
                     and opt not in mount_invisible_keys:
@@ -371,13 +443,68 @@ def mounted(name,
                                 # don't write remount into fstab
                                 if 'remount' in opts:
                                     opts.remove('remount')
+
+                            # Update the cache
+                            update_mount_cache = True
+
+                mount_cache = __salt__['mount.read_mount_cache'](real_name)
+                if 'opts' in mount_cache:
+                    _missing = [opt for opt in mount_cache['opts']
+                                if opt not in opts]
+
+                    if _missing:
+                        if __opts__['test']:
+                            ret['result'] = None
+                            ret['comment'] = ('Remount would be forced because'
+                                              ' options ({0})'
+                                              'changed'.format(','.join(_missing)))
+                            return ret
+                        else:
+                            # Some file systems require umounting and mounting if options change
+                            # add others to list that require similiar functionality
+                            if fstype in ['nfs', 'cvfs'] or fstype.startswith('fuse'):
+                                ret['changes']['umount'] = "Forced unmount and mount because " \
+                                                            + "options ({0}) changed".format(opt)
+                                unmount_result = __salt__['mount.umount'](real_name)
+                                if unmount_result is True:
+                                    mount_result = __salt__['mount.mount'](real_name, device, mkmnt=mkmnt, fstype=fstype, opts=opts)
+                                    ret['result'] = mount_result
+                                else:
+                                    ret['result'] = False
+                                    ret['comment'] = 'Unable to unmount {0}: {1}.'.format(real_name, unmount_result)
+                                    return ret
+                            else:
+                                ret['changes']['umount'] = "Forced remount because " \
+                                                            + "options ({0}) changed".format(opt)
+                                remount_result = __salt__['mount.remount'](real_name, device, mkmnt=mkmnt, fstype=fstype, opts=opts)
+                                ret['result'] = remount_result
+                                # Cleanup after the remount, so we
+                                # don't write remount into fstab
+                                if 'remount' in opts:
+                                    opts.remove('remount')
+
+                        update_mount_cache = True
+                else:
+                    update_mount_cache = True
+
             if real_device not in device_list:
                 # name matches but device doesn't - need to umount
+                _device_mismatch_is_ignored = None
+                for regex in list(device_name_regex):
+                    for _device in device_list:
+                        if re.match(regex, _device):
+                            _device_mismatch_is_ignored = _device
+                            break
                 if __opts__['test']:
                     ret['result'] = None
                     ret['comment'] = "An umount would have been forced " \
                                      + "because devices do not match.  Watched: " \
                                      + device
+                elif _device_mismatch_is_ignored:
+                    ret['result'] = True
+                    ret['comment'] = "An umount will not be forced " \
+                                     + "because device matched device_name_regex: " \
+                                     + _device_mismatch_is_ignored
                 else:
                     ret['changes']['umount'] = "Forced unmount because devices " \
                                                + "don't match. Wanted: " + device
@@ -390,6 +517,7 @@ def mounted(name,
                         ret['comment'] = "Unable to unmount"
                         ret['result'] = None
                         return ret
+                    update_mount_cache = True
             else:
                 ret['comment'] = 'Target was already mounted'
     # using a duplicate check so I can catch the results of a umount
@@ -413,6 +541,7 @@ def mounted(name,
 
             out = __salt__['mount.mount'](name, device, mkmnt, fstype, opts, user=user)
             active = __salt__['mount.active'](extended=True)
+            update_mount_cache = True
             if isinstance(out, string_types):
                 # Failed to (re)mount, the state has failed!
                 ret['comment'] = out
@@ -511,6 +640,13 @@ def mounted(name,
                                                   pass_num,
                                                   config,
                                                   match_on=match_on)
+
+        if update_mount_cache:
+            cache_result = __salt__['mount.write_mount_cache'](real_name,
+                                                               device,
+                                                               mkmnt=mkmnt,
+                                                               fstype=fstype,
+                                                               mount_opts=opts)
 
         if out == 'present':
             ret['comment'] += '. Entry already exists in the fstab.'
@@ -620,7 +756,8 @@ def unmounted(name,
               device=None,
               config='/etc/fstab',
               persist=False,
-              user=None):
+              user=None,
+              **kwargs):
     '''
     .. versionadded:: 0.17.0
 
@@ -650,6 +787,8 @@ def unmounted(name,
            'result': True,
            'comment': ''}
 
+    update_mount_cache = False
+
     # Get the active data
     active = __salt__['mount.active'](extended=True)
     if name not in active:
@@ -664,8 +803,10 @@ def unmounted(name,
             return ret
         if device:
             out = __salt__['mount.umount'](name, device, user=user)
+            update_mount_cache = True
         else:
             out = __salt__['mount.umount'](name, user=user)
+            update_mount_cache = True
         if isinstance(out, string_types):
             # Failed to umount, the state has failed!
             ret['comment'] = out
@@ -677,6 +818,9 @@ def unmounted(name,
         else:
             ret['comment'] = 'Execute set to False, Target was not unmounted'
             ret['result'] = True
+
+    if update_mount_cache:
+        cache_result = __salt__['mount.delete_mount_cache'](name)
 
     if persist:
         # Override default for Mac OS

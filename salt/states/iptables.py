@@ -191,10 +191,9 @@ at some point be deprecated in favor of a more generic ``firewall`` state.
     output of iptables-save. This may have unintended consequences on legacy
     releases of ``iptables``.
 '''
-from __future__ import absolute_import
+from __future__ import absolute_import, unicode_literals, print_function
 
 # Import salt libs
-import salt.utils
 from salt.state import STATE_INTERNAL_KEYWORDS as _STATE_INTERNAL_KEYWORDS
 
 
@@ -774,9 +773,6 @@ def flush(name, table='filter', family='ipv4', **kwargs):
         if ignore in kwargs:
             del kwargs[ignore]
 
-    if 'table' not in kwargs:
-        table = 'filter'
-
     if 'chain' not in kwargs:
         kwargs['chain'] = ''
     if __opts__['test']:
@@ -813,7 +809,7 @@ def mod_aggregate(low, chunks, running):
     if low.get('fun') not in agg_enabled:
         return low
     for chunk in chunks:
-        tag = salt.utils.gen_state_tag(chunk)
+        tag = __utils__['state.gen_tag'](chunk)
         if tag in running:
             # Already ran the iptables state, skip aggregation
             continue

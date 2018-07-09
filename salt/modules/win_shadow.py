@@ -8,9 +8,11 @@ Manage the shadow file
     *'shadow.info' is not available*), see :ref:`here
     <module-provider-override>`.
 '''
-from __future__ import absolute_import
+# Import Python libs
+from __future__ import absolute_import, unicode_literals, print_function
 
-import salt.utils
+# Import Salt libs
+import salt.utils.platform
 
 # Define the module's virtual name
 __virtualname__ = 'shadow'
@@ -20,7 +22,7 @@ def __virtual__():
     '''
     Only works on Windows systems
     '''
-    if salt.utils.is_windows():
+    if salt.utils.platform.is_windows():
         return __virtualname__
     return (False, 'Module win_shadow: module only works on Windows systems.')
 
@@ -72,6 +74,12 @@ def set_expire(name, expire):
 
     :return: True if successful. False if unsuccessful.
     :rtype: bool
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' shadow.set_expire <username> 2016/7/1
     '''
     return __salt__['user.update'](name, expiration_date=expire)
 
@@ -84,6 +92,12 @@ def require_password_change(name):
 
     :return: True if successful. False if unsuccessful.
     :rtype: bool
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' shadow.require_password_change <username>
     '''
     return __salt__['user.update'](name, expired=True)
 
@@ -96,6 +110,12 @@ def unlock_account(name):
 
     :return: True if successful. False if unsuccessful.
     :rtype: bool
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' shadow.unlock_account <username>
     '''
     return __salt__['user.update'](name, unlock_account=True)
 

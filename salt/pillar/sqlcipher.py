@@ -12,7 +12,7 @@ This module is a concrete implementation of the sql_base
 ext_pillar for SQLCipher.
 
 :maturity: new
-:depends: pysqlcipher
+:depends: pysqlcipher (for py2) or pysqlcipher3 (for py3)
 :platform: all
 
 Configuring the sqlcipher ext_pillar
@@ -57,7 +57,7 @@ Complete example
             as_list: True
             with_lists: [1,3]
 '''
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 
 # Import python libs
 from contextlib import contextmanager

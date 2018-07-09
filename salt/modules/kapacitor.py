@@ -6,28 +6,51 @@ Kapacitor execution module.
     parameters or as configuration settings in /etc/salt/minion on the relevant
     minions::
 
+        kapacitor.unsafe_ssl: 'false'
+        kapacitor.protocol: 'http'
         kapacitor.host: 'localhost'
         kapacitor.port: 9092
 
     This data can also be passed into pillar. Options passed into opts will
     overwrite options passed into pillar.
 
-.. versionadded:: Carbon
+.. versionadded:: 2016.11.0
 '''
+# Import Python libs
+from __future__ import absolute_import, print_function, unicode_literals
 
-from __future__ import absolute_import
-
-import json
-import logging
-
-import salt.utils
+# Import Salt lobs
+from salt.ext import six
 import salt.utils.http
-
-LOG = logging.getLogger(__name__)
+import salt.utils.json
+import salt.utils.path
+from salt.utils.decorators import memoize
 
 
 def __virtual__():
-    return 'kapacitor' if salt.utils.which('kapacitor') else False
+    return 'kapacitor' if salt.utils.path.which('kapacitor') else False
+
+
+@memoize
+def version():
+    '''
+    Get the kapacitor version.
+    '''
+    version = __salt__['pkg.version']('kapacitor')
+    if not version:
+        version = six.string_types(__salt__['config.option']('kapacitor.version', 'latest'))
+    return version
+
+
+def _get_url():
+    '''
+    Get the kapacitor URL.
+    '''
+    protocol = __salt__['config.option']('kapacitor.protocol', 'http')
+    host = __salt__['config.option']('kapacitor.host', 'localhost')
+    port = __salt__['config.option']('kapacitor.port', 9092)
+
+    return '{0}://{1}:{2}'.format(protocol, host, port)
 
 
 def get_task(name):
@@ -43,17 +66,34 @@ def get_task(name):
 
         salt '*' kapacitor.get_task cpu
     '''
-    host = __salt__['config.option']('kapacitor.host', 'localhost')
-    port = __salt__['config.option']('kapacitor.port', 9092)
-    url = 'http://{0}:{1}/task?name={2}'.format(host, port, name)
-    response = salt.utils.http.query(url, status=True)
+    url = _get_url()
+
+    if version() < '0.13':
+        task_url = '{0}/task?name={1}'.format(url, name)
+    else:
+        task_url = '{0}/kapacitor/v1/tasks/{1}?skip-format=true'.format(url, name)
+
+    response = salt.utils.http.query(task_url, status=True)
 
     if response['status'] == 404:
         return None
 
-    data = json.loads(response['body'])
+    data = salt.utils.json.loads(response['body'])
 
-    return data
+    if version() < '0.13':
+        return {
+            'script': data['TICKscript'],
+            'type': data['Type'],
+            'dbrps': data['DBRPs'],
+            'enabled': data['Enabled'],
+        }
+
+    return {
+        'script': data['script'],
+        'type': data['type'],
+        'dbrps': data['dbrps'],
+        'enabled': data['status'] == 'enabled',
+    }
 
 
 def _run_cmd(cmd):
@@ -61,7 +101,11 @@ def _run_cmd(cmd):
     Run a Kapacitor task and return a dictionary of info.
     '''
     ret = {}
-    result = __salt__['cmd.run_all'](cmd)
+    env_vars = {
+        'KAPACITOR_URL': _get_url(),
+        'KAPACITOR_UNSAFE_SSL': __salt__['config.option']('kapacitor.unsafe_ssl', 'false'),
+    }
+    result = __salt__['cmd.run_all'](cmd, env=env_vars)
 
     if result.get('stdout'):
         ret['stdout'] = result['stdout']
@@ -76,7 +120,8 @@ def define_task(name,
                 tick_script,
                 task_type='stream',
                 database=None,
-                retention_policy='default'):
+                retention_policy='default',
+                dbrps=None):
     '''
     Define a task. Serves as both create/update.
 
@@ -88,6 +133,13 @@ def define_task(name,
 
     task_type
         Task type. Defaults to 'stream'
+
+    dbrps
+        A list of databases and retention policies in "dbname"."rpname" format
+        to fetch data from. For backward compatibility, the value of
+        'database' and 'retention_policy' will be merged as part of dbrps.
+
+        .. versionadded:: Fluorine
 
     database
         Which database to fetch data from. Defaults to None, which will use the
@@ -102,16 +154,29 @@ def define_task(name,
 
         salt '*' kapacitor.define_task cpu salt://kapacitor/cpu.tick database=telegraf
     '''
-    cmd = 'kapacitor define -name {0} -tick {1}'.format(name, tick_script)
+    if version() < '0.13':
+        cmd = 'kapacitor define -name {0}'.format(name)
+    else:
+        cmd = 'kapacitor define {0}'.format(name)
 
     if tick_script.startswith('salt://'):
         tick_script = __salt__['cp.cache_file'](tick_script, __env__)
 
+    cmd += ' -tick {0}'.format(tick_script)
+
     if task_type:
         cmd += ' -type {0}'.format(task_type)
 
+    if not dbrps:
+        dbrps = []
+
     if database and retention_policy:
-        cmd += ' -dbrp {0}.{1}'.format(database, retention_policy)
+        dbrp = '{0}.{1}'.format(database, retention_policy)
+        dbrps.append(dbrp)
+
+    if dbrps:
+        for dbrp in dbrps:
+            cmd += ' -dbrp {0}'.format(dbrp)
 
     return _run_cmd(cmd)
 

@@ -2,7 +2,7 @@
 '''
 The client libs to communicate with the salt master when running raet
 '''
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 
 # Import python libs
 import os
@@ -10,14 +10,18 @@ import time
 import logging
 
 # Import Salt libs
-from raet import raeting, nacling
-from raet.lane.stacking import LaneStack
-from raet.lane.yarding import RemoteYard
 import salt.config
 import salt.client
-import salt.utils
+import salt.utils.kinds as kinds
 import salt.syspaths as syspaths
-from salt.utils import kinds
+
+try:
+    from raet import raeting, nacling
+    from raet.lane.stacking import LaneStack
+    from raet.lane.yarding import RemoteYard
+    HAS_RAET_LIBS = True
+except ImportError:
+    HAS_RAET_LIBS = False
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +40,7 @@ class LocalClient(salt.client.LocalClient):
             tgt,
             fun,
             arg=(),
-            expr_form='glob',
+            tgt_type='glob',
             ret='',
             jid='',
             timeout=5,
@@ -48,7 +52,7 @@ class LocalClient(salt.client.LocalClient):
                 tgt,
                 fun,
                 arg=arg,
-                expr_form=expr_form,
+                tgt_type=tgt_type,
                 ret=ret,
                 jid=jid,
                 timeout=timeout,
