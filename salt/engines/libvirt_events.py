@@ -3,7 +3,18 @@
 '''
 An engine that listens for libvirt events and resends them to the salt event bus.
 
-Example configuration:
+The minimal configuration is the following and will listen to all events on the
+local hypervisor and send them with a tag starting with ``salt/engines/libvirt_events``:
+
+.. code-block:: yaml
+
+    engines:
+        - libvirt_events
+
+Note that the automatically-picked libvirt connection will depend on the value
+of ``uri_default`` in ``/etc/libvirt/libvirt.conf``. To force using another
+connection like the local LXC libvirt driver, set the ``uri`` property as in the
+following example configuration.
 
 .. code-block:: yaml
 
@@ -16,9 +27,6 @@ Example configuration:
                 - domain/reboot
                 - pool
 
-The default URI is ``qemu:///system`` and the default tag prefix is
-``salt/engines/libvirt_events``.
-
 Filters is a list of event types to relay to the event bus. Items in this list
 can be either one of the main types (``domain``, ``network``, ``pool``,
 ``nodedev``, ``secret``), ``all`` or a more precise filter. These can be done
@@ -28,6 +36,29 @@ events will be relayed.
 
 Be aware that the list of events increases with libvirt versions, for example
 network events have been added in libvirt 1.2.1.
+
+Running the engine on non-root
+------------------------------
+
+Running this engine as non-root requires a special attention, which is surely
+the case for the master running as user `salt`. The engine is likely to fail
+to connect to libvirt with an error like this one:
+
+    [ERROR   ] authentication unavailable: no polkit agent available to authenticate action 'org.libvirt.unix.monitor'
+
+
+To fix this, the user running the engine, for example the salt-master, needs
+to have the rights to connect to libvirt in the machine polkit config.
+A polkit rule like the following one will allow `salt` user to connect to libvirt:
+
+.. code-block:: javascript
+
+    polkit.addRule(function(action, subject) {
+        if (action.id.indexOf("org.libvirt") == 0 &&
+            subject.user == "salt") {
+            return polkit.Result.YES;
+        }
+    });
 
 :depends: libvirt 1.0.0+ python binding
 
@@ -195,7 +226,7 @@ def _salt_send_event(opaque, conn, data):
     if __opts__.get('__role') == 'master':
         salt.utils.event.get_master_event(
             __opts__,
-            __opts__['sock_dir']).fire_event(tag, all_data)
+            __opts__['sock_dir']).fire_event(all_data, tag)
     else:
         __salt__['event.send'](tag, all_data)
 
@@ -214,7 +245,8 @@ def _salt_send_domain_event(opaque, conn, domain, event, event_data):
     data = {
         'domain': {
             'name': domain.name(),
-            'id': domain.ID()
+            'id': domain.ID(),
+            'uuid': domain.UUIDString()
         },
         'event': event
     }
@@ -228,7 +260,8 @@ def _domain_event_lifecycle_cb(conn, domain, event, detail, opaque):
     '''
     event_str, detail_str = _get_domain_event_detail(event, detail)
 
-    _salt_send_domain_event(opaque, conn, domain, event_str, {
+    _salt_send_domain_event(opaque, conn, domain, opaque['event'], {
+        'event':  event_str,
         'detail': detail_str
     })
 
@@ -280,10 +313,9 @@ def _domain_event_graphics_cb(conn, domain, phase, local, remote, auth, subject,
         '''
         transform address structure into event data piece
         '''
-        data = {'family': _get_libvirt_enum_string('{0}_ADDRESS_'.format(prefix), addr.family),
-                'node': addr.node}
-        if addr.service is not None:
-            data['service'] = addr.service
+        data = {'family': _get_libvirt_enum_string('{0}_ADDRESS_'.format(prefix), addr['family']),
+                'node': addr['node'],
+                'service': addr['service']}
         return addr
 
     _salt_send_domain_event(opaque, conn, domain, opaque['event'], {
@@ -291,10 +323,7 @@ def _domain_event_graphics_cb(conn, domain, phase, local, remote, auth, subject,
         'local': get_address(local),
         'remote': get_address(remote),
         'authScheme': auth,
-        'subject': {
-            'type': subject.type,
-            'name': subject.name
-        }
+        'subject': [{'type': item[0], 'name': item[1]} for item in subject]
     })
 
 
@@ -468,7 +497,10 @@ def _network_event_lifecycle_cb(conn, net, event, detail, opaque):
     '''
 
     _salt_send_event(opaque, conn, {
-        'network': net.name(),
+        'network': {
+            'name': net.name(),
+            'uuid': net.UUIDString()
+        },
         'event': _get_libvirt_enum_string('VIR_NETWORK_EVENT_', event),
         'detail': 'unknown'  # currently unused
     })
@@ -479,7 +511,10 @@ def _pool_event_lifecycle_cb(conn, pool, event, detail, opaque):
     Storage pool lifecycle events handler
     '''
     _salt_send_event(opaque, conn, {
-        'pool': pool.name(),
+        'pool': {
+            'name': pool.name(),
+            'uuid': pool.UUIDString()
+        },
         'event': _get_libvirt_enum_string('VIR_STORAGE_POOL_EVENT_', event),
         'detail': 'unknown'  # currently unused
     })
@@ -490,7 +525,10 @@ def _pool_event_refresh_cb(conn, pool, opaque):
     Storage pool refresh events handler
     '''
     _salt_send_event(opaque, conn, {
-        'pool': pool.name(),
+        'pool': {
+            'name': pool.name(),
+            'uuid': pool.UUIDString()
+        },
         'event': opaque['event']
     })
 
@@ -500,7 +538,9 @@ def _nodedev_event_lifecycle_cb(conn, dev, event, detail, opaque):
     Node device lifecycle events handler
     '''
     _salt_send_event(opaque, conn, {
-        'nodedev': dev.name(),
+        'nodedev': {
+            'name': dev.name()
+        },
         'event': _get_libvirt_enum_string('VIR_NODE_DEVICE_EVENT_', event),
         'detail': 'unknown'  # currently unused
     })
@@ -511,7 +551,9 @@ def _nodedev_event_update_cb(conn, dev, opaque):
     Node device update events handler
     '''
     _salt_send_event(opaque, conn, {
-        'nodedev': dev.name(),
+        'nodedev': {
+            'name': dev.name()
+        },
         'event': opaque['event']
     })
 
@@ -521,7 +563,9 @@ def _secret_event_lifecycle_cb(conn, secret, event, detail, opaque):
     Secret lifecycle events handler
     '''
     _salt_send_event(opaque, conn, {
-        'secret': secret.UUIDString(),
+        'secret': {
+            'uuid': secret.UUIDString()
+        },
         'event': _get_libvirt_enum_string('VIR_SECRET_EVENT_', event),
         'detail': 'unknown'  # currently unused
     })
@@ -532,7 +576,9 @@ def _secret_event_value_changed_cb(conn, secret, opaque):
     Secret value change events handler
     '''
     _salt_send_event(opaque, conn, {
-        'secret': secret.UUIDString(),
+        'secret': {
+            'uuid': secret.UUIDString()
+        },
         'event': opaque['event']
     })
 
@@ -612,14 +658,14 @@ def _append_callback_id(ids, obj, callback_id):
     ids[obj].append(callback_id)
 
 
-def start(uri='qemu:///system',
+def start(uri=None,
           tag_prefix='salt/engines/libvirt_events',
           filters=None):
     '''
     Listen to libvirt events and forward them to salt.
 
     :param uri: libvirt URI to listen on.
-                Defaults to 'qemu:///system'
+                Defaults to None to pick the first available local hypervisor
     :param tag_prefix: the begining of the salt event tag to use.
                        Defaults to 'salt/engines/libvirt_events'
     :param filters: the list of event of listen on. Defaults to 'all'
@@ -629,8 +675,8 @@ def start(uri='qemu:///system',
     try:
         libvirt.virEventRegisterDefaultImpl()
 
-        log.debug('Opening libvirt uri: %s', uri)
         cnx = libvirt.openReadOnly(uri)
+        log.debug('Opened libvirt uri: %s', cnx.getURI())
 
         callback_ids = {}
         all_filters = "all" in filters
@@ -648,6 +694,7 @@ def start(uri='qemu:///system',
         exit_loop = False
         while not exit_loop:
             exit_loop = libvirt.virEventRunDefaultImpl() < 0
+            log.debug('=== in the loop exit_loop %s ===', exit_loop)
 
     except Exception as err:  # pylint: disable=broad-except
         log.exception(err)
